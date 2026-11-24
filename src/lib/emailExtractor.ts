@@ -1,4 +1,27 @@
-import MsgReader from '@kenjiuno/msgreader';
+import * as MsgReaderModule from '@kenjiuno/msgreader';
+
+type MsgReaderInstance = {
+  getFileData: () => { attachments?: Array<{ fileName?: string; name?: string }> };
+  getAttachment: (att: unknown) => { content?: Uint8Array } | undefined;
+};
+
+function createMsgReader(buffer: ArrayBuffer): MsgReaderInstance {
+  const mod = MsgReaderModule as unknown as Record<string, unknown>;
+  const step1 = mod.default ?? mod;
+  const ctor =
+    typeof step1 === 'function'
+      ? step1
+      : typeof (step1 as Record<string, unknown>)?.default === 'function'
+        ? (step1 as Record<string, unknown>).default
+        : typeof (step1 as Record<string, unknown>)?.MsgReader === 'function'
+          ? (step1 as Record<string, unknown>).MsgReader
+          : mod.MsgReader;
+
+  if (typeof ctor !== 'function') {
+    throw new Error('No se pudo inicializar el lector de archivos .msg en el navegador.');
+  }
+  return new (ctor as new (buf: ArrayBuffer) => MsgReaderInstance)(buffer);
+}
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -40,7 +63,7 @@ function decodeMimeFilename(raw: string): string {
  */
 async function extractDocxFromMsg(file: File): Promise<File[]> {
   const buffer = await file.arrayBuffer();
-  const reader = new MsgReader(buffer);
+  const reader = createMsgReader(buffer);
   const fileData = reader.getFileData();
   const attachments = fileData.attachments ?? [];
   const extracted: File[] = [];
