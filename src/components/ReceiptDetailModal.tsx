@@ -66,6 +66,7 @@ export function ReceiptDetailModal({
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
+  const modalBodyRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
@@ -117,7 +118,7 @@ export function ReceiptDetailModal({
       if (e.key === 'ArrowLeft' && hasPrev) {
         e.preventDefault();
         onPrev();
-      } else if (e.key === 'ArrowRight' && hasNext) {
+      } else if ((e.key === 'ArrowRight' || e.key === 'Enter') && hasNext) {
         e.preventDefault();
         onNext();
       }
@@ -155,6 +156,11 @@ export function ReceiptDetailModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs"
       onClick={onClose}
+      onWheel={(e) => {
+        if (e.target === e.currentTarget && modalBodyRef.current) {
+          modalBodyRef.current.scrollTop += e.deltaY;
+        }
+      }}
     >
       <div
         className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
@@ -185,7 +191,7 @@ export function ReceiptDetailModal({
                   type="button"
                   disabled={!hasNext}
                   onClick={onNext}
-                  title="Movimiento siguiente (→)"
+                  title="Movimiento siguiente (→ o Enter)"
                   className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   <ChevronRight className="h-4 w-4" />
@@ -203,7 +209,7 @@ export function ReceiptDetailModal({
         </div>
 
         {/* Scrollable Body */}
-        <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
+        <div ref={modalBodyRef} className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
           {/* Status Switcher & Reason */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
             <span className="font-semibold text-slate-700">Estado del registro:</span>
