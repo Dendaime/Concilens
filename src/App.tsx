@@ -34,6 +34,7 @@ import { extractImagesFromDocxFiles } from './lib/docxParser';
 import { analyzeBatchWithGemini } from './lib/gemini';
 import { analyzeBatchWithOllama, fetchOllamaModels } from './lib/ollama';
 import { GEMINI_CHAT_PROMPT, parseManualGeminiJson } from './lib/manualJsonParser';
+import { exportImagesToPdfForGemini } from './lib/pdfExporter';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
 import { exportAuditToExcel } from './lib/exportExcel';
 import { formatARS } from './lib/dateUtils';
@@ -612,26 +613,42 @@ export default function App() {
 
                     {provider === 'chat' ? (
                       <>
-                        <div className="flex items-center justify-between gap-2">
-                          <button
-                            type="button"
-                            onClick={handleCopyPrompt}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
-                          >
-                            {promptCopied ? (
-                              <>
-                                <Check className="h-3.5 w-3.5 text-emerald-600" />
-                                ¡Prompt copiado!
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="h-3.5 w-3.5" />
-                                1. Copiar Prompt
-                              </>
-                            )}
-                          </button>
-                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
-                            <span className="text-slate-500">Tol. días:</span>
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={extractedImages.length === 0}
+                              onClick={() =>
+                                exportImagesToPdfForGemini(extractedImages).catch((e) =>
+                                  setErrorMsg(e instanceof Error ? e.message : 'Error al generar PDF.')
+                                )
+                              }
+                              title="Genera 1 solo PDF con todas las hojas de tus .docx para subir a Gemini Pro"
+                              className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                              1. Bajar PDF
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCopyPrompt}
+                              className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                            >
+                              {promptCopied ? (
+                                <>
+                                  <Check className="h-3.5 w-3.5 text-emerald-600" />
+                                  ¡Copiado!
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3.5 w-3.5" />
+                                  2. Prompt
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs">
+                            <span className="text-slate-500">Tol.:</span>
                             <input
                               type="number"
                               min={0}
@@ -642,7 +659,7 @@ export default function App() {
                                 setDateToleranceDays(v);
                                 handleReconcileOnly(selectedCajero, v);
                               }}
-                              className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
+                              className="w-8 text-right font-semibold text-slate-800 focus:outline-none"
                             />
                           </div>
                         </div>
@@ -650,7 +667,7 @@ export default function App() {
                           rows={3}
                           value={pastedJson}
                           onChange={(e) => setPastedJson(e.target.value)}
-                          placeholder='2. Pegá acá el JSON que te devolvió tu chat de Gemini Pro ({ "comprobantes": [...] })...'
+                          placeholder='3. Subí el PDF + Prompt a tu Gemini Pro y pegá acá el JSON que devuelve...'
                           className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
                         />
                       </>
