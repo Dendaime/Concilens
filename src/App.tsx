@@ -1294,8 +1294,9 @@ export default function App() {
                         onPointerUp={cancelLongPress}
                         onPointerLeave={cancelLongPress}
                         onPointerCancel={cancelLongPress}
-                        onClick={() => {
+                        onClick={(e) => {
                           if (longPressTriggeredRef.current) {
+                            e.stopPropagation();
                             longPressTriggeredRef.current = false;
                             return;
                           }
@@ -1407,7 +1408,10 @@ export default function App() {
               <button
                 key={cat.id}
                 type="button"
-                onClick={() => handleToggleCategory(ctxItem.id, cat.id)}
+                onClick={() => {
+                  handleToggleCategory(ctxItem.id, cat.id);
+                  setCtxMenu(null);
+                }}
                 className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
               >
                 <span className="flex items-center gap-2 truncate">
