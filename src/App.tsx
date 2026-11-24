@@ -19,7 +19,6 @@ import {
   Save,
   FolderOpen,
   Trash2,
-  Mail,
 } from 'lucide-react';
 import type {
   AuditStatus,
@@ -31,6 +30,7 @@ import type {
 } from './types';
 import { parseSystemExcel } from './lib/excelParser';
 import { extractImagesFromDocxFiles } from './lib/docxParser';
+import { extractDocxFromMixedFiles } from './lib/emailExtractor';
 import { GEMINI_CHAT_PROMPT, parseManualGeminiJson } from './lib/manualJsonParser';
 import { exportImagesToPdfForGemini } from './lib/pdfExporter';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
@@ -46,7 +46,6 @@ import {
   type SavedSession,
 } from './lib/storage';
 import { ReceiptViewer } from './components/ReceiptViewer';
-import { OutlookImportModal } from './components/OutlookImportModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
 
@@ -103,7 +102,6 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [outlookModalOpen, setOutlookModalOpen] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
 
   // Restore saved session from IndexedDB on mount
@@ -222,18 +220,24 @@ export default function App() {
 
   const handleDocxUpload = async (files: FileList | File[]) => {
     setErrorMsg(null);
-    const list = Array.from(files).filter((f) => f.name.toLowerCase().endsWith('.docx'));
-    if (list.length === 0) {
-      setErrorMsg('Seleccioná uno o más archivos .docx de minutas.');
-      return;
-    }
     try {
-      const imgs = await extractImagesFromDocxFiles(list);
-      setDocxFileNames(list.map((f) => f.name));
+      const { docxFiles, emailsProcessed } = await extractDocxFromMixedFiles(files);
+      if (docxFiles.length === 0) {
+        setErrorMsg(
+          emailsProcessed > 0
+            ? `Se revisaron ${emailsProcessed} correos (.msg/.eml), pero no contenían adjuntos .docx.`
+            : 'Seleccioná archivos .docx o correos .msg / .eml de Outlook con minutas adjuntas.'
+        );
+        return;
+      }
+      const imgs = await extractImagesFromDocxFiles(docxFiles);
+      setDocxFileNames(docxFiles.map((f) => f.name));
       setExtractedImages(imgs);
       setExtractedReceipts([]);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Error al descomprimir los archivos .docx.');
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error al procesar los archivos .docx / .msg / .eml.'
+      );
     }
   };
 
@@ -599,35 +603,25 @@ export default function App() {
                   )}
                 </div>
 
-                {/* 2. Minutas .docx */}
+                {/* 2. Minutas .docx / .msg / .eml */}
                 <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div>
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                        <FileText className="h-4 w-4 text-indigo-600" />
-                        Minutas (.docx)
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setOutlookModalOpen(true)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100"
-                      >
-                        <Mail className="h-3 w-3" />
-                        Importar de Outlook
-                      </button>
+                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
+                      <FileText className="h-4 w-4 text-indigo-600" />
+                      Minutas (.docx) o Correos (.msg / .eml)
                     </div>
                     <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-white px-3 py-5 text-center transition hover:border-indigo-400">
                       <span className="text-xs font-medium text-slate-700">
                         {docxFileNames.length > 0
                           ? `${docxFileNames.length} minutas cargadas (${extractedImages.length} hojas)`
-                          : 'Seleccioná 1 o varias minutas .docx'}
+                          : 'Seleccioná .docx o correos .msg / .eml de Outlook'}
                       </span>
                       <span className="mt-1 text-[11px] text-slate-400">
-                        Descomprime /word/media/ local + hash SHA-256
+                        Extrae los .docx adjuntos de los mails + hash SHA-256
                       </span>
                       <input
                         type="file"
-                        accept=".docx"
+                        accept=".docx,.msg,.eml"
                         multiple
                         className="hidden"
                         onChange={(e) => {
@@ -896,12 +890,6 @@ export default function App() {
           </section>
         )}
       </main>
-
-      <OutlookImportModal
-        isOpen={outlookModalOpen}
-        onClose={() => setOutlookModalOpen(false)}
-        onImportFiles={handleDocxUpload}
-      />
     </div>
   );
 }
