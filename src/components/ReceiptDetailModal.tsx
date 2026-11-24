@@ -65,9 +65,34 @@ export function ReceiptDetailModal({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
+
+  // Lock background page scroll while modal is open
+  useEffect(() => {
+    if (!item) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [Boolean(item)]);
+
+  // Non-passive wheel listener on the image preview ONLY so wheel zooms without scrolling modal/page
+  useEffect(() => {
+    const el = previewViewportRef.current;
+    if (!el || !item) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const delta = e.deltaY < 0 ? 0.2 : -0.2;
+      setZoom((z) => Math.min(5, Math.max(0.5, +(z + delta).toFixed(2))));
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [item?.id, activeReceiptIdx]);
 
   useEffect(() => {
     if (!item) return;
@@ -360,12 +385,7 @@ export function ReceiptDetailModal({
               )}
             </div>
             <div
-              onWheel={(e) => {
-                if (!activeImage) return;
-                e.preventDefault();
-                const delta = e.deltaY < 0 ? 0.2 : -0.2;
-                setZoom((z) => Math.min(5, Math.max(0.5, +(z + delta).toFixed(2))));
-              }}
+              ref={previewViewportRef}
               onPointerDown={(e) => {
                 if (!panMode || !activeImage || e.button !== 0) return;
                 e.currentTarget.setPointerCapture(e.pointerId);
