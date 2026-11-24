@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   RotateCw,
   ZoomIn,
@@ -8,6 +8,7 @@ import {
   FileImage,
   Tag,
   Plus,
+  Hand,
 } from 'lucide-react';
 import type { AuditCategory, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -33,6 +34,10 @@ export function ReceiptDetailModal({
 }: ReceiptDetailModalProps) {
   const [rotation, setRotation] = useState(0);
   const [zoom, setZoom] = useState(1);
+  const [panMode, setPanMode] = useState(true);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
@@ -42,6 +47,8 @@ export function ReceiptDetailModal({
     setDraftNote(item.auditorNote ?? '');
     setRotation(0);
     setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setIsDragging(false);
     setActiveReceiptIdx(0);
     setSavedFlash(false);
   }, [item?.id]);
@@ -214,6 +221,18 @@ export function ReceiptDetailModal({
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
+                    onClick={() => setPanMode((v) => !v)}
+                    title={panMode ? 'Herramienta de mano activa (arrastrá para mover)' : 'Activar herramienta de mano'}
+                    className={`rounded-lg border p-1.5 transition ${
+                      panMode
+                        ? 'border-indigo-600 bg-indigo-600 text-white'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Hand className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setRotation((r) => (r + 90) % 360)}
                     title="Rotar 90°"
                     className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
@@ -222,7 +241,7 @@ export function ReceiptDetailModal({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setZoom((z) => Math.min(3, +(z + 0.25).toFixed(2)))}
+                    onClick={() => setZoom((z) => Math.min(4, +(z + 0.35).toFixed(2)))}
                     title="Acercar"
                     className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
                   >
@@ -230,7 +249,7 @@ export function ReceiptDetailModal({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))}
+                    onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.35).toFixed(2)))}
                     title="Alejar"
                     className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
                   >
@@ -241,8 +260,9 @@ export function ReceiptDetailModal({
                     onClick={() => {
                       setRotation(0);
                       setZoom(1);
+                      setPan({ x: 0, y: 0 });
                     }}
-                    title="Restablecer"
+                    title="Restablecer vista"
                     className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
@@ -250,16 +270,55 @@ export function ReceiptDetailModal({
                 </div>
               )}
             </div>
-            <div className="flex max-h-[380px] min-h-[180px] items-center justify-center overflow-auto p-4">
+            <div
+              onPointerDown={(e) => {
+                if (!panMode || !activeImage || e.button !== 0) return;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                setIsDragging(true);
+                dragStartRef.current = {
+                  x: e.clientX,
+                  y: e.clientY,
+                  panX: pan.x,
+                  panY: pan.y,
+                };
+              }}
+              onPointerMove={(e) => {
+                if (!isDragging || !dragStartRef.current) return;
+                const dx = e.clientX - dragStartRef.current.x;
+                const dy = e.clientY - dragStartRef.current.y;
+                setPan({
+                  x: dragStartRef.current.panX + dx,
+                  y: dragStartRef.current.panY + dy,
+                });
+              }}
+              onPointerUp={() => {
+                setIsDragging(false);
+                dragStartRef.current = null;
+              }}
+              onPointerCancel={() => {
+                setIsDragging(false);
+                dragStartRef.current = null;
+              }}
+              className={`flex h-[380px] items-center justify-center overflow-hidden p-4 select-none ${
+                panMode && activeImage
+                  ? isDragging
+                    ? 'cursor-grabbing'
+                    : 'cursor-grab'
+                  : 'overflow-auto'
+              }`}
+            >
               {activeImage ? (
                 <img
                   src={activeImage.dataUrl}
                   alt={activeImage.imageName}
+                  draggable={false}
                   style={{
-                    transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg)`,
                     transformOrigin: 'center center',
                   }}
-                  className="max-h-[340px] rounded-lg border border-slate-200 bg-white object-contain shadow-sm transition-transform duration-150"
+                  className={`max-h-[340px] rounded-lg border border-slate-200 bg-white object-contain shadow-sm ${
+                    isDragging ? '' : 'transition-transform duration-150'
+                  }`}
                 />
               ) : (
                 <div className="flex flex-col items-center text-slate-400">
