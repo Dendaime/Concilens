@@ -17,6 +17,9 @@ import {
   Loader2,
   Cpu,
   RefreshCw,
+  Copy,
+  Check,
+  MessageSquare,
 } from 'lucide-react';
 import type {
   AuditStatus,
@@ -30,6 +33,7 @@ import { parseSystemExcel } from './lib/excelParser';
 import { extractImagesFromDocxFiles } from './lib/docxParser';
 import { analyzeBatchWithGemini } from './lib/gemini';
 import { analyzeBatchWithOllama, fetchOllamaModels } from './lib/ollama';
+import { GEMINI_CHAT_PROMPT, parseManualGeminiJson } from './lib/manualJsonParser';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
 import { exportAuditToExcel } from './lib/exportExcel';
 import { formatARS } from './lib/dateUtils';
@@ -37,7 +41,7 @@ import { buildDemoData } from './lib/demoData';
 import { ReceiptViewer } from './components/ReceiptViewer';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
-type AiProvider = 'ollama' | 'gemini';
+type AiProvider = 'chat' | 'gemini' | 'ollama';
 
 const GEMINI_MODELS = [
   { id: 'gemini-flash-latest', label: 'Gemini Flash Latest (Recomendado)' },
@@ -75,8 +79,10 @@ const STATUS_META: Record<
 export default function App() {
   // Config
   const [provider, setProvider] = useState<AiProvider>(
-    () => (localStorage.getItem('concilens_provider') as AiProvider) || 'ollama'
+    () => (localStorage.getItem('concilens_provider') as AiProvider) || 'chat'
   );
+  const [pastedJson, setPastedJson] = useState('');
+  const [promptCopied, setPromptCopied] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('concilens_api_key') ?? '');
   const [model, setModel] = useState('gemini-flash-latest');
   const [ollamaUrl, setOllamaUrl] = useState(
@@ -194,12 +200,40 @@ export default function App() {
     }
   };
 
+  const handleCopyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(GEMINI_CHAT_PROMPT);
+      setPromptCopied(true);
+      setTimeout(() => setPromptCopied(false), 2500);
+    } catch {
+      setErrorMsg('No se pudo copiar al portapapeles automáticamente.');
+    }
+  };
+
   const handleRunReconciliation = async () => {
     setErrorMsg(null);
     if (filteredMovements.length === 0) {
       setErrorMsg('Primero cargá el archivo Excel/CSV del sistema.');
       return;
     }
+
+    if (provider === 'chat') {
+      try {
+        const receipts = parseManualGeminiJson(pastedJson, extractedImages);
+        setExtractedReceipts(receipts);
+        const reconciled = reconcileMovementsAndReceipts(filteredMovements, receipts, {
+          dateToleranceDays,
+          amountTolerance: 0.05,
+        });
+        setItems(reconciled);
+        setSelectedItemId(reconciled[0]?.id ?? null);
+        setSetupExpanded(false);
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : 'Error al procesar el JSON pegado.');
+      }
+      return;
+    }
+
     if (extractedImages.length === 0) {
       setErrorMsg('Primero cargá al menos una minuta .docx con imágenes.');
       return;
@@ -519,9 +553,11 @@ export default function App() {
                 {/* 3. AI Provider Config & Run */}
                 <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div className="space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
-                        {provider === 'ollama' ? (
+                        {provider === 'chat' ? (
+                          <MessageSquare className="h-4 w-4 text-indigo-600" />
+                        ) : provider === 'ollama' ? (
                           <Cpu className="h-4 w-4 text-emerald-600" />
                         ) : (
                           <KeyRound className="h-4 w-4 text-amber-600" />
@@ -529,6 +565,34 @@ export default function App() {
                         Motor IA
                       </div>
                       <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-[11px] font-medium">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProvider('chat');
+                            localStorage.setItem('concilens_provider', 'chat');
+                          }}
+                          className={`rounded-md px-2 py-0.5 transition ${
+                            provider === 'chat'
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          Gemini Chat
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProvider('gemini');
+                            localStorage.setItem('concilens_provider', 'gemini');
+                          }}
+                          className={`rounded-md px-2 py-0.5 transition ${
+                            provider === 'gemini'
+                              ? 'bg-amber-600 text-white'
+                              : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          API
+                        </button>
                         <button
                           type="button"
                           onClick={() => {
@@ -541,26 +605,56 @@ export default function App() {
                               : 'text-slate-600 hover:bg-slate-100'
                           }`}
                         >
-                          Ollama Local
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setProvider('gemini');
-                            localStorage.setItem('concilens_provider', 'gemini');
-                          }}
-                          className={`rounded-md px-2 py-0.5 transition ${
-                            provider === 'gemini'
-                              ? 'bg-indigo-600 text-white'
-                              : 'text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          Gemini API
+                          Ollama
                         </button>
                       </div>
                     </div>
 
-                    {provider === 'ollama' ? (
+                    {provider === 'chat' ? (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCopyPrompt}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                          >
+                            {promptCopied ? (
+                              <>
+                                <Check className="h-3.5 w-3.5 text-emerald-600" />
+                                ¡Prompt copiado!
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-3.5 w-3.5" />
+                                1. Copiar Prompt
+                              </>
+                            )}
+                          </button>
+                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
+                            <span className="text-slate-500">Tol. días:</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={15}
+                              value={dateToleranceDays}
+                              onChange={(e) => {
+                                const v = Math.max(0, Number(e.target.value) || 0);
+                                setDateToleranceDays(v);
+                                handleReconcileOnly(selectedCajero, v);
+                              }}
+                              className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={pastedJson}
+                          onChange={(e) => setPastedJson(e.target.value)}
+                          placeholder='2. Pegá acá el JSON que te devolvió tu chat de Gemini Pro ({ "comprobantes": [...] })...'
+                          className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                        />
+                      </>
+                    ) : provider === 'ollama' ? (
                       <>
                         <div className="flex gap-1.5">
                           <input
