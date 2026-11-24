@@ -130,6 +130,15 @@ export default function App() {
     minuta: '',
     categorias: '',
   });
+  const [colSelectedValues, setColSelectedValues] = useState<Record<ColumnKey, string[]>>({
+    estado: [],
+    fecha: [],
+    numero: [],
+    proveedor: [],
+    importe: [],
+    minuta: [],
+    categorias: [],
+  });
   const [openColFilter, setOpenColFilter] = useState<ColumnKey | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -477,12 +486,59 @@ export default function App() {
     return c;
   }, [items]);
 
+  const getItemColValues = (it: ReconciliationItem, col: ColumnKey): string[] => {
+    const sys = it.systemMovements[0];
+    const rec = it.receipts[0];
+    const amount = sys?.total ?? it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
+
+    switch (col) {
+      case 'estado':
+        return [STATUS_META[it.status].label];
+      case 'fecha':
+        return [sys?.fecha ?? rec?.fecha ?? '(Sin fecha)'];
+      case 'numero':
+        return [sys?.numero || rec?.nroComprobante || '(Sin número)'];
+      case 'proveedor':
+        return [sys?.descripcion || sys?.razonSocial || rec?.proveedorOConcepto || '(Sin proveedor)'];
+      case 'importe':
+        return [formatARS(amount)];
+      case 'minuta':
+        return [rec ? rec.minutaFile : '(Sin minuta)'];
+      case 'categorias': {
+        const names = (it.categoryIds ?? [])
+          .map((id) => categoriesById.get(id)?.name)
+          .filter((n): n is string => Boolean(n));
+        return names.length > 0 ? names : ['(Sin categoría)'];
+      }
+    }
+  };
+
+  const uniqueColValues = useMemo(() => {
+    const result = {} as Record<ColumnKey, Array<{ value: string; count: number }>>;
+    for (const col of COLUMN_DEFS) {
+      const map = new Map<string, number>();
+      for (const it of items) {
+        for (const val of getItemColValues(it, col.key)) {
+          map.set(val, (map.get(val) ?? 0) + 1);
+        }
+      }
+      result[col.key] = Array.from(map.entries())
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true }));
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, categoriesById]);
+
   const activeColFiltersCount = useMemo(
-    () => Object.values(colFilters).filter((v) => v.trim().length > 0).length,
-    [colFilters]
+    () =>
+      COLUMN_DEFS.filter(
+        (c) => colFilters[c.key].trim().length > 0 || colSelectedValues[c.key].length > 0
+      ).length,
+    [colFilters, colSelectedValues]
   );
 
-  const clearColFilters = () =>
+  const clearColFilters = () => {
     setColFilters({
       estado: '',
       fecha: '',
@@ -492,6 +548,24 @@ export default function App() {
       minuta: '',
       categorias: '',
     });
+    setColSelectedValues({
+      estado: [],
+      fecha: [],
+      numero: [],
+      proveedor: [],
+      importe: [],
+      minuta: [],
+      categorias: [],
+    });
+  };
+
+  const toggleColValue = (col: ColumnKey, value: string) => {
+    setColSelectedValues((prev) => {
+      const cur = prev[col];
+      const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+      return { ...prev, [col]: next };
+    });
+  };
 
   const visibleItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -507,7 +581,7 @@ export default function App() {
         return false;
       }
 
-      // Category filter
+      // Category bar filter
       const itemCats = it.categoryIds ?? [];
       if (selectedCategoryFilter === 'NONE' && itemCats.length > 0) return false;
       if (
@@ -518,43 +592,28 @@ export default function App() {
         return false;
       }
 
-      const sys = it.systemMovements[0];
-      const rec = it.receipts[0];
-      const amount =
-        sys?.total ?? it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
-      const catNames = itemCats.map((id) => categoriesById.get(id)?.name ?? '').join(' ');
-
-      // Per-column text filters
-      if (colFilters.estado.trim()) {
-        const estadoTxt = `${STATUS_META[it.status].label} ${it.hasDuplicateAlert ? 'duplicado' : ''}`.toLowerCase();
-        if (!estadoTxt.includes(colFilters.estado.trim().toLowerCase())) return false;
-      }
-      if (colFilters.fecha.trim()) {
-        const fechaTxt = `${sys?.fecha ?? ''} ${rec?.fecha ?? ''}`.toLowerCase();
-        if (!fechaTxt.includes(colFilters.fecha.trim().toLowerCase())) return false;
-      }
-      if (colFilters.numero.trim()) {
-        const numTxt = `${sys?.numero ?? ''} ${rec?.nroComprobante ?? ''}`.toLowerCase();
-        if (!numTxt.includes(colFilters.numero.trim().toLowerCase())) return false;
-      }
-      if (colFilters.proveedor.trim()) {
-        const provTxt = `${sys?.descripcion ?? ''} ${sys?.razonSocial ?? ''} ${rec?.proveedorOConcepto ?? ''} ${it.reason}`.toLowerCase();
-        if (!provTxt.includes(colFilters.proveedor.trim().toLowerCase())) return false;
-      }
-      if (colFilters.importe.trim()) {
-        const impTxt = `${amount} ${formatARS(amount)}`.toLowerCase();
-        if (!impTxt.includes(colFilters.importe.trim().toLowerCase())) return false;
-      }
-      if (colFilters.minuta.trim()) {
-        const minTxt = it.receipts.map((r) => `${r.minutaFile} ${r.imageName}`).join(' ').toLowerCase();
-        if (!minTxt.includes(colFilters.minuta.trim().toLowerCase())) return false;
-      }
-      if (colFilters.categorias.trim()) {
-        const catObsTxt = `${catNames} ${it.auditorNote}`.toLowerCase();
-        if (!catObsTxt.includes(colFilters.categorias.trim().toLowerCase())) return false;
+      // Per-column checkbox & text filters
+      for (const col of COLUMN_DEFS) {
+        const vals = getItemColValues(it, col.key);
+        const selected = colSelectedValues[col.key];
+        if (selected.length > 0 && !vals.some((v) => selected.includes(v))) {
+          return false;
+        }
+        const txtFilter = colFilters[col.key].trim().toLowerCase();
+        if (txtFilter && selected.length === 0) {
+          const extra =
+            col.key === 'categorias'
+              ? ` ${it.auditorNote}`
+              : col.key === 'proveedor'
+                ? ` ${it.reason}`
+                : '';
+          const combined = `${vals.join(' ')}${extra}`.toLowerCase();
+          if (!combined.includes(txtFilter)) return false;
+        }
       }
 
       if (!q) return true;
+      const catNames = itemCats.map((id) => categoriesById.get(id)?.name ?? '').join(' ');
       const haystack = [
         it.reason,
         it.auditorNote,
@@ -571,7 +630,8 @@ export default function App() {
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [items, activeTab, selectedCategoryFilter, colFilters, searchQuery, categoriesById]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, activeTab, selectedCategoryFilter, colFilters, colSelectedValues, searchQuery, categoriesById]);
 
   const detailItem = useMemo(
     () => items.find((it) => it.id === detailItemId) ?? null,
@@ -1077,8 +1137,16 @@ export default function App() {
                 <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   <tr className="border-b border-slate-200">
                     {COLUMN_DEFS.map((col) => {
-                      const hasVal = colFilters[col.key].trim().length > 0;
+                      const hasVal =
+                        colFilters[col.key].trim().length > 0 ||
+                        colSelectedValues[col.key].length > 0;
                       const isOpen = openColFilter === col.key;
+                      const filterQ = colFilters[col.key].trim().toLowerCase();
+                      const options = (uniqueColValues[col.key] ?? []).filter((opt) =>
+                        !filterQ ? true : opt.value.toLowerCase().includes(filterQ)
+                      );
+                      const selectedSet = new Set(colSelectedValues[col.key]);
+
                       return (
                         <th
                           key={col.key}
@@ -1106,7 +1174,7 @@ export default function App() {
                           {isOpen && (
                             <div
                               onClick={(e) => e.stopPropagation()}
-                              className={`absolute top-full z-30 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-2 text-left font-normal normal-case tracking-normal shadow-lg ${
+                              className={`absolute top-full z-30 mt-1 w-60 rounded-xl border border-slate-200 bg-white p-2 text-left font-normal normal-case tracking-normal shadow-xl ${
                                 col.key === 'categorias' || col.alignRight ? 'right-2' : 'left-2'
                               }`}
                             >
@@ -1121,20 +1189,59 @@ export default function App() {
                                   }))
                                 }
                                 onKeyDown={(e) => {
-                                  if (e.key === 'Escape' || e.key === 'Enter') {
-                                    setOpenColFilter(null);
-                                  }
+                                  if (e.key === 'Escape') setOpenColFilter(null);
                                 }}
-                                placeholder={`Filtrar ${col.label.toLowerCase()}…`}
+                                placeholder={`Buscar en ${col.label.toLowerCase()}…`}
                                 className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
                               />
+
+                              {/* Checklist of unique values in this column */}
+                              <div className="mt-2 max-h-48 space-y-0.5 overflow-y-auto pr-0.5">
+                                {options.length === 0 ? (
+                                  <p className="px-2 py-2 text-center text-[11px] text-slate-400">
+                                    Sin coincidencias
+                                  </p>
+                                ) : (
+                                  options.map((opt) => {
+                                    const checked = selectedSet.has(opt.value);
+                                    return (
+                                      <label
+                                        key={opt.value}
+                                        className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                                      >
+                                        <span className="flex min-w-0 items-center gap-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() => toggleColValue(col.key, opt.value)}
+                                            className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                          />
+                                          <span className="truncate" title={opt.value}>
+                                            {opt.value}
+                                          </span>
+                                        </span>
+                                        <span className="shrink-0 text-[10px] text-slate-400 tabular-nums">
+                                          {opt.count}
+                                        </span>
+                                      </label>
+                                    );
+                                  })
+                                )}
+                              </div>
+
                               {hasVal && (
-                                <div className="mt-1.5 flex justify-end">
+                                <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-1.5">
+                                  <span className="text-[10px] text-slate-400">
+                                    {colSelectedValues[col.key].length > 0
+                                      ? `${colSelectedValues[col.key].length} selec.`
+                                      : 'Filtro de texto'}
+                                  </span>
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      setColFilters((prev) => ({ ...prev, [col.key]: '' }))
-                                    }
+                                    onClick={() => {
+                                      setColFilters((prev) => ({ ...prev, [col.key]: '' }));
+                                      setColSelectedValues((prev) => ({ ...prev, [col.key]: [] }));
+                                    }}
                                     className="text-[11px] font-medium text-rose-600 hover:underline"
                                   >
                                     Limpiar
