@@ -19,12 +19,14 @@ import {
   Save,
   FolderOpen,
   Trash2,
+  Tag,
+  Plus,
 } from 'lucide-react';
 import type {
+  AuditCategory,
   AuditStatus,
   ExtractedImage,
   ExtractedReceipt,
-  ManualReviewState,
   ReconciliationItem,
   SystemMovement,
 } from './types';
@@ -45,9 +47,16 @@ import {
   saveSessionToDb,
   type SavedSession,
 } from './lib/storage';
-import { ReceiptViewer } from './components/ReceiptViewer';
+import { ReceiptDetailModal } from './components/ReceiptDetailModal';
+import { CategoryManagerModal } from './components/CategoryManagerModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
+
+const DEFAULT_CATEGORIES: AuditCategory[] = [
+  { id: 'cat-ok', name: 'Revisado OK', color: '#16a34a' },
+  { id: 'cat-obs', name: 'Observar monto', color: '#d97706' },
+  { id: 'cat-pend', name: 'Pendiente comprobante', color: '#dc2626' },
+];
 
 const STATUS_META: Record<
   AuditStatus,
@@ -91,9 +100,17 @@ export default function App() {
   const [extractedImages, setExtractedImages] = useState<ExtractedImage[]>([]);
   const [extractedReceipts, setExtractedReceipts] = useState<ExtractedReceipt[]>([]);
 
-  // Results
+  // Results & Hotelito-style audit categories
   const [items, setItems] = useState<ReconciliationItem[]>([]);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [categories, setCategories] = useState<AuditCategory[]>(DEFAULT_CATEGORIES);
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL'); // 'ALL' | 'NONE' | cat.id
+  const [catPopoverOpen, setCatPopoverOpen] = useState(false);
+  const [catModalOpen, setCatModalOpen] = useState(false);
+
+  // Detail modal & right-click context menu
+  const [detailItemId, setDetailItemId] = useState<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
+
   const [activeTab, setActiveTab] = useState<FilterTab>('excepciones');
   const [searchQuery, setSearchQuery] = useState('');
   const [setupExpanded, setSetupExpanded] = useState(true);
@@ -103,6 +120,16 @@ export default function App() {
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Close context menu / category popover on outside click
+  useEffect(() => {
+    const closeMenus = () => {
+      setCtxMenu(null);
+      setCatPopoverOpen(false);
+    };
+    window.addEventListener('click', closeMenus);
+    return () => window.removeEventListener('click', closeMenus);
+  }, []);
 
   // Restore saved session from IndexedDB on mount
   useEffect(() => {
@@ -119,14 +146,19 @@ export default function App() {
         setExtractedReceipts(saved.extractedReceipts);
         setPastedJson(saved.pastedJson);
         setDateToleranceDays(saved.dateToleranceDays);
-        setItems(saved.items);
-        setSelectedItemId(saved.items[0]?.id ?? null);
+        setItems(
+          saved.items.map((it) => ({
+            ...it,
+            categoryIds: Array.isArray(it.categoryIds) ? it.categoryIds : [],
+          }))
+        );
+        if (Array.isArray(saved.categories) && saved.categories.length > 0) {
+          setCategories(saved.categories);
+        }
         setLastSavedAt(saved.savedAt);
         if (saved.items.length > 0) setSetupExpanded(false);
       })
-      .catch(() => {
-        // Ignore storage read errors on first run
-      })
+      .catch(() => {})
       .finally(() => {
         if (active) setHydrated(true);
       });
@@ -148,6 +180,7 @@ export default function App() {
     pastedJson,
     dateToleranceDays,
     items,
+    categories,
   });
 
   // Auto-save to IndexedDB whenever work changes (debounced)
@@ -164,9 +197,7 @@ export default function App() {
       const session = buildCurrentSession();
       saveSessionToDb(session)
         .then(() => setLastSavedAt(session.savedAt))
-        .catch(() => {
-          // Ignore silent autosave errors
-        });
+        .catch(() => {});
     }, 500);
 
     return () => clearTimeout(timer);
@@ -183,6 +214,7 @@ export default function App() {
     pastedJson,
     dateToleranceDays,
     items,
+    categories,
   ]);
 
   const imagesById = useMemo(() => {
@@ -190,6 +222,12 @@ export default function App() {
     for (const img of extractedImages) map.set(img.id, img);
     return map;
   }, [extractedImages]);
+
+  const categoriesById = useMemo(() => {
+    const map = new Map<string, AuditCategory>();
+    for (const c of categories) map.set(c.id, c);
+    return map;
+  }, [categories]);
 
   const filteredMovements = useMemo(() => {
     if (selectedCajero === 'TODOS') return allMovements;
@@ -265,7 +303,6 @@ export default function App() {
         amountTolerance: 0.05,
       });
       setItems(reconciled);
-      setSelectedItemId(reconciled[0]?.id ?? null);
       setSetupExpanded(false);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Error al procesar el JSON pegado.');
@@ -288,7 +325,6 @@ export default function App() {
       amountTolerance: 0.05,
     });
     setItems(reconciled);
-    setSelectedItemId(reconciled[0]?.id ?? null);
     setActiveTab('todos');
     setSetupExpanded(false);
   };
@@ -302,7 +338,6 @@ export default function App() {
       amountTolerance: 0.05,
     });
     setItems(reconciled);
-    setSelectedItemId(reconciled[0]?.id ?? null);
   };
 
   const handleSaveBackup = () => {
@@ -322,8 +357,15 @@ export default function App() {
       setExtractedReceipts(saved.extractedReceipts);
       setPastedJson(saved.pastedJson);
       setDateToleranceDays(saved.dateToleranceDays);
-      setItems(saved.items);
-      setSelectedItemId(saved.items[0]?.id ?? null);
+      setItems(
+        saved.items.map((it) => ({
+          ...it,
+          categoryIds: Array.isArray(it.categoryIds) ? it.categoryIds : [],
+        }))
+      );
+      if (Array.isArray(saved.categories) && saved.categories.length > 0) {
+        setCategories(saved.categories);
+      }
       setSetupExpanded(saved.items.length === 0);
       await saveSessionToDb(saved);
       setLastSavedAt(saved.savedAt);
@@ -347,18 +389,50 @@ export default function App() {
     setExtractedReceipts([]);
     setPastedJson('');
     setItems([]);
-    setSelectedItemId(null);
+    setDetailItemId(null);
     setLastSavedAt(null);
     setErrorMsg(null);
     setSetupExpanded(true);
   };
 
-  const handleUpdateManualState = (itemId: string, manualState: ManualReviewState) => {
-    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, manualState } : it)));
+  const handleSaveNote = (itemId: string, auditorNote: string) => {
+    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
   };
 
-  const handleUpdateNote = (itemId: string, auditorNote: string) => {
-    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
+  const handleToggleCategory = (itemId: string, categoryId: string) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        const current = it.categoryIds ?? [];
+        const exists = current.includes(categoryId);
+        return {
+          ...it,
+          categoryIds: exists
+            ? current.filter((id) => id !== categoryId)
+            : [...current, categoryId],
+        };
+      })
+    );
+  };
+
+  const handleCreateCategory = (name: string, color: string) => {
+    const newCat: AuditCategory = {
+      id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      color,
+    };
+    setCategories((prev) => [...prev, newCat]);
+  };
+
+  const handleDeleteCategory = (catId: string) => {
+    setCategories((prev) => prev.filter((c) => c.id !== catId));
+    setItems((prev) =>
+      prev.map((it) => ({
+        ...it,
+        categoryIds: (it.categoryIds ?? []).filter((id) => id !== catId),
+      }))
+    );
+    if (selectedCategoryFilter === catId) setSelectedCategoryFilter('ALL');
   };
 
   const counts = useMemo(() => {
@@ -392,10 +466,24 @@ export default function App() {
       ) {
         return false;
       }
+
+      // Category filter
+      const itemCats = it.categoryIds ?? [];
+      if (selectedCategoryFilter === 'NONE' && itemCats.length > 0) return false;
+      if (
+        selectedCategoryFilter !== 'ALL' &&
+        selectedCategoryFilter !== 'NONE' &&
+        !itemCats.includes(selectedCategoryFilter)
+      ) {
+        return false;
+      }
+
       if (!q) return true;
+      const catNames = itemCats.map((id) => categoriesById.get(id)?.name ?? '').join(' ');
       const haystack = [
         it.reason,
         it.auditorNote,
+        catNames,
         ...it.systemMovements.map(
           (m) => `${m.numero} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
         ),
@@ -408,11 +496,16 @@ export default function App() {
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [items, activeTab, searchQuery]);
+  }, [items, activeTab, selectedCategoryFilter, searchQuery, categoriesById]);
 
-  const selectedItem = useMemo(
-    () => items.find((it) => it.id === selectedItemId) ?? null,
-    [items, selectedItemId]
+  const detailItem = useMemo(
+    () => items.find((it) => it.id === detailItemId) ?? null,
+    [items, detailItemId]
+  );
+
+  const ctxItem = useMemo(
+    () => (ctxMenu ? items.find((it) => it.id === ctxMenu.itemId) ?? null : null),
+    [items, ctxMenu]
   );
 
   const formattedSavedTime = useMemo(() => {
@@ -503,7 +596,7 @@ export default function App() {
             <button
               type="button"
               disabled={items.length === 0}
-              onClick={() => exportAuditToExcel(items)}
+              onClick={() => exportAuditToExcel(items, categories)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className="h-3.5 w-3.5" />
@@ -719,7 +812,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Error Banner */}
               {errorMsg && (
                 <div className="mt-3 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
                   <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
@@ -752,144 +844,331 @@ export default function App() {
           </section>
         )}
 
-        {/* Split-View Audit Workbench */}
+        {/* Full-Width Hotelito-Style Audit Table */}
         {items.length > 0 && (
-          <section className="grid flex-1 gap-4 lg:grid-cols-12">
-            {/* Left: Filterable Table */}
-            <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:col-span-7 xl:col-span-8">
-              {/* Filter Tabs & Search */}
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
-                <div className="flex flex-wrap gap-1.5">
-                  {(
-                    [
-                      { key: 'excepciones', label: `Excepciones (${counts.excepciones})` },
-                      { key: 'todos', label: `Todos (${counts.todos})` },
-                      { key: 'conciliado', label: `Conciliados (${counts.conciliado})` },
-                      { key: 'revisar', label: `Revisar (${counts.revisar})` },
-                      { key: 'sin_respaldo', label: `Sin respaldo (${counts.sin_respaldo})` },
-                      { key: 'no_registrado', label: `No reg. (${counts.no_registrado})` },
-                    ] as const
-                  ).map((tab) => (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      onClick={() => setActiveTab(tab.key)}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                        activeTab === tab.key
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
+          <section className="flex flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            {/* Top Toolbar: Status Tabs + Hotelito Category Filter Bar + Search */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    { key: 'excepciones', label: `Excepciones (${counts.excepciones})` },
+                    { key: 'todos', label: `Todos (${counts.todos})` },
+                    { key: 'conciliado', label: `Conciliados (${counts.conciliado})` },
+                    { key: 'revisar', label: `Revisar (${counts.revisar})` },
+                    { key: 'sin_respaldo', label: `Sin respaldo (${counts.sin_respaldo})` },
+                    { key: 'no_registrado', label: `No reg. (${counts.no_registrado})` },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                      activeTab === tab.key
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Hotelito-style Category Filter Bar */}
+                <div className="relative flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategoryFilter('ALL')}
+                    className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                      selectedCategoryFilter === 'ALL'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCatPopoverOpen((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                      selectedCategoryFilter !== 'ALL'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Tag className="h-3 w-3" />
+                    {selectedCategoryFilter === 'ALL'
+                      ? 'Categorías ▾'
+                      : selectedCategoryFilter === 'NONE'
+                        ? 'Sin categoría ▾'
+                        : `${categoriesById.get(selectedCategoryFilter)?.name ?? 'Categoría'} ▾`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCatModalOpen(true)}
+                    title="Crear o administrar categorías de auditoría"
+                    className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+
+                  {catPopoverOpen && (
+                    <div className="absolute right-0 top-9 z-30 w-56 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-lg">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategoryFilter('ALL');
+                          setCatPopoverOpen(false);
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
+                      >
+                        <span>Todas las categorías</span>
+                        {selectedCategoryFilter === 'ALL' && <Check className="h-3.5 w-3.5 text-indigo-600" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategoryFilter('NONE');
+                          setCatPopoverOpen(false);
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-slate-600 hover:bg-slate-100"
+                      >
+                        <span>Sin categoría</span>
+                        {selectedCategoryFilter === 'NONE' && <Check className="h-3.5 w-3.5 text-indigo-600" />}
+                      </button>
+                      {categories.length > 0 && <div className="my-1 border-t border-slate-100" />}
+                      {categories.map((cat) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCategoryFilter(cat.id);
+                            setCatPopoverOpen(false);
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
+                        >
+                          <span className="flex items-center gap-2 truncate">
+                            <span
+                              className="h-2.5 w-2.5 shrink-0 rounded-full"
+                              style={{ backgroundColor: cat.color }}
+                            />
+                            <span className="truncate">{cat.name}</span>
+                          </span>
+                          {selectedCategoryFilter === cat.id && (
+                            <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
-                <div className="relative w-full sm:w-56">
+                {/* Search */}
+                <div className="relative w-full sm:w-64">
                   <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Buscar proveedor, N°, monto..."
+                    placeholder="Buscar proveedor, N°, categoría u obs…"
                     className="w-full rounded-lg border border-slate-200 py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
               </div>
-
-              {/* Table */}
-              <div className="max-h-[640px] flex-1 overflow-auto">
-                <table className="w-full border-collapse text-left text-xs">
-                  <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    <tr className="border-b border-slate-200">
-                      <th className="px-3 py-2.5">Estado</th>
-                      <th className="px-3 py-2.5">Fecha</th>
-                      <th className="px-3 py-2.5">N° Comp.</th>
-                      <th className="px-3 py-2.5">Proveedor / Concepto</th>
-                      <th className="px-3 py-2.5 text-right">Importe</th>
-                      <th className="px-3 py-2.5">Minuta</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {visibleItems.map((it) => {
-                      const meta = STATUS_META[it.status];
-                      const Icon = meta.icon;
-                      const sys = it.systemMovements[0];
-                      const rec = it.receipts[0];
-                      const isSelected = it.id === selectedItemId;
-
-                      const amount =
-                        sys?.total ??
-                        it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
-
-                      return (
-                        <tr
-                          key={it.id}
-                          onClick={() => setSelectedItemId(it.id)}
-                          className={`cursor-pointer transition ${
-                            isSelected ? 'bg-indigo-50/70' : 'hover:bg-slate-50'
-                          }`}
-                        >
-                          <td className="whitespace-nowrap px-3 py-2.5">
-                            <div className="flex items-center gap-1">
-                              <span
-                                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.badgeClass}`}
-                              >
-                                <Icon className="h-3 w-3" />
-                                {meta.label}
-                              </span>
-                              {it.hasDuplicateAlert && (
-                                <span title={it.duplicateDetails || 'Posible duplicado'}>
-                                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-2.5 text-slate-600 tabular-nums">
-                            {sys?.fecha ?? rec?.fecha ?? '—'}
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-slate-600">
-                            {sys?.numero || rec?.nroComprobante || '—'}
-                          </td>
-                          <td className="max-w-[240px] truncate px-3 py-2.5 font-medium text-slate-800">
-                            {sys?.descripcion || sys?.razonSocial || rec?.proveedorOConcepto || '—'}
-                            <div className="truncate text-[11px] font-normal text-slate-400">
-                              {it.reason}
-                            </div>
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-slate-900 tabular-nums">
-                            {formatARS(amount)}
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
-                            {rec ? `${rec.minutaFile}` : '—'}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {visibleItems.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="px-4 py-10 text-center text-slate-400">
-                          No hay resultados para el filtro actual.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
             </div>
 
-            {/* Right: Receipt Image & Audit Panel */}
-            <div className="lg:col-span-5 xl:col-span-4">
-              <ReceiptViewer
-                item={selectedItem}
-                imagesById={imagesById}
-                onUpdateManualState={handleUpdateManualState}
-                onUpdateNote={handleUpdateNote}
-              />
+            {/* Hotelito-style Meta Hint */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-1.5 text-[11px] text-slate-500">
+              <span>Mostrando {visibleItems.length} de {items.length} registros</span>
+              <span>Clic simple: ventana de comprobante y observación · Clic derecho: categorizar</span>
+            </div>
+
+            {/* Table */}
+            <div className="max-h-[680px] flex-1 overflow-auto">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <tr className="border-b border-slate-200">
+                    <th className="px-3 py-2.5">Estado</th>
+                    <th className="px-3 py-2.5">Fecha</th>
+                    <th className="px-3 py-2.5">N° Comp.</th>
+                    <th className="px-3 py-2.5">Proveedor / Concepto</th>
+                    <th className="px-3 py-2.5 text-right">Importe</th>
+                    <th className="px-3 py-2.5">Minuta</th>
+                    <th className="px-3 py-2.5">Categorías / Obs.</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {visibleItems.map((it) => {
+                    const meta = STATUS_META[it.status];
+                    const Icon = meta.icon;
+                    const sys = it.systemMovements[0];
+                    const rec = it.receipts[0];
+                    const amount =
+                      sys?.total ??
+                      it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
+                    const itemCats = (it.categoryIds ?? [])
+                      .map((id) => categoriesById.get(id))
+                      .filter((c): c is AuditCategory => Boolean(c));
+
+                    return (
+                      <tr
+                        key={it.id}
+                        onClick={() => setDetailItemId(it.id)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setCtxMenu({ itemId: it.id, x: e.clientX, y: e.clientY });
+                        }}
+                        className="cursor-pointer transition hover:bg-indigo-50/50"
+                      >
+                        <td className="whitespace-nowrap px-3 py-2.5">
+                          <div className="flex items-center gap-1">
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.badgeClass}`}
+                            >
+                              <Icon className="h-3 w-3" />
+                              {meta.label}
+                            </span>
+                            {it.hasDuplicateAlert && (
+                              <span title={it.duplicateDetails || 'Posible duplicado'}>
+                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-slate-600 tabular-nums">
+                          {sys?.fecha ?? rec?.fecha ?? '—'}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-slate-600">
+                          {sys?.numero || rec?.nroComprobante || '—'}
+                        </td>
+                        <td className="max-w-[300px] truncate px-3 py-2.5 font-medium text-slate-800">
+                          {sys?.descripcion || sys?.razonSocial || rec?.proveedorOConcepto || '—'}
+                          <div className="truncate text-[11px] font-normal text-slate-400">
+                            {it.reason}
+                          </div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-slate-900 tabular-nums">
+                          {formatARS(amount)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
+                          {rec ? rec.minutaFile : '—'}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {itemCats.map((cat) => (
+                              <span
+                                key={cat.id}
+                                style={{
+                                  backgroundColor: `${cat.color}18`,
+                                  color: cat.color,
+                                  borderColor: `${cat.color}44`,
+                                }}
+                                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+                              >
+                                <span
+                                  className="h-1.5 w-1.5 rounded-full"
+                                  style={{ backgroundColor: cat.color }}
+                                />
+                                {cat.name}
+                              </span>
+                            ))}
+                            {it.auditorNote.trim() && (
+                              <span
+                                title={it.auditorNote}
+                                className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600"
+                              >
+                                📝 Obs.
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {visibleItems.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                        No hay resultados para el filtro actual.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </section>
         )}
       </main>
+
+      {/* Right-click Floating Context Menu (Hotelito style) */}
+      {ctxMenu && ctxItem && (
+        <div
+          style={{
+            position: 'fixed',
+            top: Math.min(ctxMenu.y, window.innerHeight - 260),
+            left: Math.min(ctxMenu.x, window.innerWidth - 230),
+          }}
+          onClick={(e) => e.stopPropagation()}
+          className="z-50 w-56 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl"
+        >
+          <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            Categorizar registro
+          </p>
+          {categories.map((cat) => {
+            const checked = (ctxItem.categoryIds ?? []).includes(cat.id);
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => handleToggleCategory(ctxItem.id, cat.id)}
+                className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: cat.color }}
+                  />
+                  <span className="truncate font-medium text-slate-800">{cat.name}</span>
+                </span>
+                {checked && <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />}
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
+            onClick={() => {
+              setCtxMenu(null);
+              setCatModalOpen(true);
+            }}
+            className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left font-medium text-indigo-600 hover:bg-indigo-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Administrar categorías…
+          </button>
+        </div>
+      )}
+
+      {/* Hotelito-style Receipt Detail Modal */}
+      <ReceiptDetailModal
+        item={detailItem}
+        imagesById={imagesById}
+        categories={categories}
+        onClose={() => setDetailItemId(null)}
+        onSaveNote={handleSaveNote}
+        onToggleCategory={handleToggleCategory}
+        onOpenCategoryManager={() => setCatModalOpen(true)}
+      />
+
+      {/* Hotelito-style Category Manager Modal */}
+      <CategoryManagerModal
+        isOpen={catModalOpen}
+        categories={categories}
+        onClose={() => setCatModalOpen(false)}
+        onCreateCategory={handleCreateCategory}
+        onDeleteCategory={handleDeleteCategory}
+      />
     </div>
   );
 }

@@ -134,6 +134,7 @@ export function reconcileMovementsAndReceipts(
       hasDuplicateAlert: hasDup,
       duplicateDetails: c.rec.duplicateReason,
       manualState: 'pendiente',
+      categoryIds: [],
       auditorNote: '',
     });
   }
@@ -194,6 +195,7 @@ export function reconcileMovementsAndReceipts(
       hasDuplicateAlert: hasDup,
       duplicateDetails: c.rec.duplicateReason,
       manualState: 'pendiente',
+      categoryIds: [],
       auditorNote: obsText,
     });
   }
@@ -241,6 +243,7 @@ export function reconcileMovementsAndReceipts(
         hasDuplicateAlert: hasDup,
         duplicateDetails: foundPair[0].duplicateReason ?? foundPair[1].duplicateReason,
         manualState: 'pendiente',
+      categoryIds: [],
         auditorNote: '',
       });
     }
@@ -258,6 +261,7 @@ export function reconcileMovementsAndReceipts(
       receipts: [],
       hasDuplicateAlert: false,
       manualState: 'pendiente',
+      categoryIds: [],
       auditorNote: '',
     });
   }
@@ -276,6 +280,7 @@ export function reconcileMovementsAndReceipts(
       hasDuplicateAlert: hasDup,
       duplicateDetails: rec.duplicateReason,
       manualState: 'pendiente',
+      categoryIds: [],
       auditorNote: '',
     });
   }

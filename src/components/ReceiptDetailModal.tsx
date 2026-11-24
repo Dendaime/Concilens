@@ -1,0 +1,353 @@
+import { useEffect, useState } from 'react';
+import {
+  RotateCw,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  AlertTriangle,
+  FileImage,
+  Tag,
+  Plus,
+} from 'lucide-react';
+import type { AuditCategory, ExtractedImage, ReconciliationItem } from '../types';
+import { formatARS } from '../lib/dateUtils';
+
+interface ReceiptDetailModalProps {
+  item: ReconciliationItem | null;
+  imagesById: Map<string, ExtractedImage>;
+  categories: AuditCategory[];
+  onClose: () => void;
+  onSaveNote: (itemId: string, note: string) => void;
+  onToggleCategory: (itemId: string, categoryId: string) => void;
+  onOpenCategoryManager: () => void;
+}
+
+export function ReceiptDetailModal({
+  item,
+  imagesById,
+  categories,
+  onClose,
+  onSaveNote,
+  onToggleCategory,
+  onOpenCategoryManager,
+}: ReceiptDetailModalProps) {
+  const [rotation, setRotation] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
+  const [draftNote, setDraftNote] = useState('');
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    if (!item) return;
+    setDraftNote(item.auditorNote ?? '');
+    setRotation(0);
+    setZoom(1);
+    setActiveReceiptIdx(0);
+    setSavedFlash(false);
+  }, [item?.id]);
+
+  useEffect(() => {
+    if (!item) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [item, onClose]);
+
+  if (!item) return null;
+
+  const safeIdx = Math.min(activeReceiptIdx, Math.max(0, item.receipts.length - 1));
+  const activeReceipt = item.receipts[safeIdx] ?? null;
+  const activeImage = activeReceipt ? imagesById.get(activeReceipt.imageId) : undefined;
+  const sys = item.systemMovements[0] ?? null;
+  const assignedIds = new Set(item.categoryIds ?? []);
+
+  const title =
+    sys?.descripcion || sys?.razonSocial || activeReceipt?.proveedorOConcepto || 'Detalle de comprobante';
+  const meta = [
+    sys?.fecha || activeReceipt?.fecha || null,
+    sys?.numero ? `N° ${sys.numero}` : activeReceipt?.nroComprobante ? `N° ${activeReceipt.nroComprobante}` : null,
+    sys?.cajero ? `Cajero ${sys.cajero}` : null,
+    sys?.balance || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const handleSaveObs = () => {
+    onSaveNote(item.id, draftNote);
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2000);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header (Hotelito style) */}
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-bold text-slate-900">{title}</h2>
+            <p className="mt-0.5 text-xs text-slate-500">{meta || item.reason}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        {/* Scrollable Body */}
+        <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
+          {/* Reason & Duplicate alert */}
+          <div className="rounded-xl border border-sky-200 bg-sky-50/70 px-3.5 py-2.5 text-sky-900">
+            <span className="font-semibold">Resultado del cruce: </span>
+            {item.reason}
+          </div>
+
+          {item.hasDuplicateAlert && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <div>
+                <span className="font-semibold">Alerta de duplicado: </span>
+                {item.duplicateDetails || 'Imagen o comprobante repetido en las minutas.'}
+              </div>
+            </div>
+          )}
+
+          {/* Side-by-side System vs Receipt */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Registro del Sistema
+              </p>
+              {sys ? (
+                <div className="space-y-1 text-slate-700">
+                  <p className="text-base font-bold text-slate-900 tabular-nums">
+                    {formatARS(sys.total)}
+                  </p>
+                  <p>
+                    Fecha: <strong>{sys.fecha}</strong> · N° <strong>{sys.numero || '—'}</strong>
+                  </p>
+                  <p>{sys.razonSocial}</p>
+                  {sys.descripcion && <p className="text-slate-600">{sys.descripcion}</p>}
+                  <p className="text-slate-500">
+                    Caja {sys.caja} · {sys.cajero} · {sys.balance}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-slate-400">No registrado en el listado del sistema.</p>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-1 flex items-center justify-between">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Comprobante en Minuta
+                </p>
+                {activeReceipt && (
+                  <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-indigo-700">
+                    {activeReceipt.posicion}
+                  </span>
+                )}
+              </div>
+              {activeReceipt ? (
+                <div className="space-y-1 text-slate-700">
+                  <p className="text-base font-bold text-slate-900 tabular-nums">
+                    {formatARS(activeReceipt.importe)}
+                  </p>
+                  <p>
+                    Fecha: <strong>{activeReceipt.fecha || '—'}</strong> · N°{' '}
+                    <strong>{activeReceipt.nroComprobante || '—'}</strong>
+                  </p>
+                  <p>{activeReceipt.proveedorOConcepto}</p>
+                  <p className="text-slate-500">
+                    {activeReceipt.tipoComprobante}
+                    {activeReceipt.cuit ? ` · CUIT ${activeReceipt.cuit}` : ''}
+                  </p>
+                  <p className="text-slate-500">
+                    {activeReceipt.minutaFile} ({activeReceipt.imageName})
+                  </p>
+                </div>
+              ) : (
+                <p className="text-slate-400">Sin comprobante vinculado en las minutas.</p>
+              )}
+            </div>
+          </div>
+
+          {/* Multiple receipts switcher */}
+          {item.receipts.length > 1 && (
+            <div className="flex flex-wrap gap-1.5">
+              {item.receipts.map((r, i) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setActiveReceiptIdx(i)}
+                  className={`rounded-lg px-3 py-1 text-xs font-medium ${
+                    i === safeIdx
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  Comprobante {i + 1} ({formatARS(r.importe)})
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Scanned Image Viewer */}
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3.5 py-2">
+              <span className="font-semibold text-slate-700">
+                {activeImage
+                  ? `Comprobante escaneado: ${activeImage.minutaFile} · ${activeImage.imageName}`
+                  : 'Imagen del comprobante'}
+              </span>
+              {activeImage && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setRotation((r) => (r + 90) % 360)}
+                    title="Rotar 90°"
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setZoom((z) => Math.min(3, +(z + 0.25).toFixed(2)))}
+                    title="Acercar"
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
+                  >
+                    <ZoomIn className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))}
+                    title="Alejar"
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
+                  >
+                    <ZoomOut className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRotation(0);
+                      setZoom(1);
+                    }}
+                    title="Restablecer"
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="flex max-h-[380px] min-h-[180px] items-center justify-center overflow-auto p-4">
+              {activeImage ? (
+                <img
+                  src={activeImage.dataUrl}
+                  alt={activeImage.imageName}
+                  style={{
+                    transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                    transformOrigin: 'center center',
+                  }}
+                  className="max-h-[340px] rounded-lg border border-slate-200 bg-white object-contain shadow-sm transition-transform duration-150"
+                />
+              ) : (
+                <div className="flex flex-col items-center text-slate-400">
+                  <FileImage className="mb-1.5 h-8 w-8" />
+                  <span>No hay imagen escaneada vinculada a este registro.</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Categorization Pills */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5 font-semibold text-slate-800">
+                <Tag className="h-3.5 w-3.5 text-indigo-600" />
+                Categorías de auditoría
+              </span>
+              <button
+                type="button"
+                onClick={onOpenCategoryManager}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+              >
+                <Plus className="h-3 w-3" />
+                Administrar
+              </button>
+            </div>
+            {categories.length === 0 ? (
+              <p className="text-slate-400">
+                Todavía no hay categorías creadas. Hacé clic en <strong>Administrar</strong> para crear una.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {categories.map((cat) => {
+                  const active = assignedIds.has(cat.id);
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => onToggleCategory(item.id, cat.id)}
+                      style={
+                        active
+                          ? { backgroundColor: cat.color, borderColor: cat.color, color: '#ffffff' }
+                          : { borderColor: `${cat.color}66`, color: cat.color, backgroundColor: '#ffffff' }
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:opacity-90"
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: active ? '#ffffff' : cat.color }}
+                      />
+                      {cat.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Hotelito-style Observación de auditoría box */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <strong className="text-xs text-slate-800">
+                📝 Observación auditoría{' '}
+                <span className="font-normal text-slate-500">(solo Concilens)</span>
+              </strong>
+              {savedFlash && (
+                <span className="text-[11px] font-bold text-emerald-600">✓ Guardado</span>
+              )}
+            </div>
+            <textarea
+              rows={3}
+              value={draftNote}
+              onChange={(e) => setDraftNote(e.target.value)}
+              placeholder="Escribí una observación de auditoría para este registro…"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveObs}
+                className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+              >
+                Guardar observación
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -58,6 +58,12 @@ export type AuditStatus =
 
 export type ManualReviewState = 'pendiente' | 'aprobado' | 'observado' | 'rechazado';
 
+export interface AuditCategory {
+  id: string;
+  name: string;
+  color: string;
+}
+
 export interface ReconciliationItem {
   id: string;
   status: AuditStatus;
@@ -69,6 +75,7 @@ export interface ReconciliationItem {
   duplicateDetails?: string;
   manualState: ManualReviewState;
   auditorNote: string;
+  categoryIds: string[];
 }
 
 export interface GeminiConfig {
