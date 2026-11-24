@@ -51,6 +51,17 @@ import { ReceiptDetailModal } from './components/ReceiptDetailModal';
 import { CategoryManagerModal } from './components/CategoryManagerModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
+type ColumnKey = 'estado' | 'fecha' | 'numero' | 'proveedor' | 'importe' | 'minuta' | 'categorias';
+
+const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }> = [
+  { key: 'estado', label: 'Estado' },
+  { key: 'fecha', label: 'Fecha' },
+  { key: 'numero', label: 'N° Comp.' },
+  { key: 'proveedor', label: 'Proveedor / Concepto' },
+  { key: 'importe', label: 'Importe', alignRight: true },
+  { key: 'minuta', label: 'Minuta' },
+  { key: 'categorias', label: 'Categorías / Obs.' },
+];
 
 const DEFAULT_CATEGORIES: AuditCategory[] = [
   { id: 'cat-ok', name: 'Revisado OK', color: '#16a34a' },
@@ -107,9 +118,21 @@ export default function App() {
   const [catPopoverOpen, setCatPopoverOpen] = useState(false);
   const [catModalOpen, setCatModalOpen] = useState(false);
 
-  // Detail modal & right-click context menu
+  // Detail modal, column filters & right-click / long-press context menu
   const [detailItemId, setDetailItemId] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
+  const [colFilters, setColFilters] = useState<Record<ColumnKey, string>>({
+    estado: '',
+    fecha: '',
+    numero: '',
+    proveedor: '',
+    importe: '',
+    minuta: '',
+    categorias: '',
+  });
+  const [openColFilter, setOpenColFilter] = useState<ColumnKey | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState<FilterTab>('excepciones');
   const [searchQuery, setSearchQuery] = useState('');
@@ -121,11 +144,12 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Close context menu / category popover on outside click
+  // Close context menu / popovers on outside click
   useEffect(() => {
     const closeMenus = () => {
       setCtxMenu(null);
       setCatPopoverOpen(false);
+      setOpenColFilter(null);
     };
     window.addEventListener('click', closeMenus);
     return () => window.removeEventListener('click', closeMenus);
@@ -453,6 +477,22 @@ export default function App() {
     return c;
   }, [items]);
 
+  const activeColFiltersCount = useMemo(
+    () => Object.values(colFilters).filter((v) => v.trim().length > 0).length,
+    [colFilters]
+  );
+
+  const clearColFilters = () =>
+    setColFilters({
+      estado: '',
+      fecha: '',
+      numero: '',
+      proveedor: '',
+      importe: '',
+      minuta: '',
+      categorias: '',
+    });
+
   const visibleItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return items.filter((it) => {
@@ -478,8 +518,43 @@ export default function App() {
         return false;
       }
 
-      if (!q) return true;
+      const sys = it.systemMovements[0];
+      const rec = it.receipts[0];
+      const amount =
+        sys?.total ?? it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
       const catNames = itemCats.map((id) => categoriesById.get(id)?.name ?? '').join(' ');
+
+      // Per-column text filters
+      if (colFilters.estado.trim()) {
+        const estadoTxt = `${STATUS_META[it.status].label} ${it.hasDuplicateAlert ? 'duplicado' : ''}`.toLowerCase();
+        if (!estadoTxt.includes(colFilters.estado.trim().toLowerCase())) return false;
+      }
+      if (colFilters.fecha.trim()) {
+        const fechaTxt = `${sys?.fecha ?? ''} ${rec?.fecha ?? ''}`.toLowerCase();
+        if (!fechaTxt.includes(colFilters.fecha.trim().toLowerCase())) return false;
+      }
+      if (colFilters.numero.trim()) {
+        const numTxt = `${sys?.numero ?? ''} ${rec?.nroComprobante ?? ''}`.toLowerCase();
+        if (!numTxt.includes(colFilters.numero.trim().toLowerCase())) return false;
+      }
+      if (colFilters.proveedor.trim()) {
+        const provTxt = `${sys?.descripcion ?? ''} ${sys?.razonSocial ?? ''} ${rec?.proveedorOConcepto ?? ''} ${it.reason}`.toLowerCase();
+        if (!provTxt.includes(colFilters.proveedor.trim().toLowerCase())) return false;
+      }
+      if (colFilters.importe.trim()) {
+        const impTxt = `${amount} ${formatARS(amount)}`.toLowerCase();
+        if (!impTxt.includes(colFilters.importe.trim().toLowerCase())) return false;
+      }
+      if (colFilters.minuta.trim()) {
+        const minTxt = it.receipts.map((r) => `${r.minutaFile} ${r.imageName}`).join(' ').toLowerCase();
+        if (!minTxt.includes(colFilters.minuta.trim().toLowerCase())) return false;
+      }
+      if (colFilters.categorias.trim()) {
+        const catObsTxt = `${catNames} ${it.auditorNote}`.toLowerCase();
+        if (!catObsTxt.includes(colFilters.categorias.trim().toLowerCase())) return false;
+      }
+
+      if (!q) return true;
       const haystack = [
         it.reason,
         it.auditorNote,
@@ -496,7 +571,7 @@ export default function App() {
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [items, activeTab, selectedCategoryFilter, searchQuery, categoriesById]);
+  }, [items, activeTab, selectedCategoryFilter, colFilters, searchQuery, categoriesById]);
 
   const detailItem = useMemo(
     () => items.find((it) => it.id === detailItemId) ?? null,
@@ -981,8 +1056,19 @@ export default function App() {
 
             {/* Hotelito-style Meta Hint */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-1.5 text-[11px] text-slate-500">
-              <span>Mostrando {visibleItems.length} de {items.length} registros</span>
-              <span>Clic simple: ventana de comprobante y observación · Clic derecho: categorizar</span>
+              <div className="flex items-center gap-2">
+                <span>Mostrando {visibleItems.length} de {items.length} registros</span>
+                {activeColFiltersCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearColFilters}
+                    className="rounded-md bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-200"
+                  >
+                    Limpiar {activeColFiltersCount} {activeColFiltersCount === 1 ? 'filtro' : 'filtros'} ×
+                  </button>
+                )}
+              </div>
+              <span>Clic simple: ventana de comprobante y observación · Clic sostenido (o derecho): categorizar</span>
             </div>
 
             {/* Table */}
@@ -990,13 +1076,76 @@ export default function App() {
               <table className="w-full border-collapse text-left text-xs">
                 <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   <tr className="border-b border-slate-200">
-                    <th className="px-3 py-2.5">Estado</th>
-                    <th className="px-3 py-2.5">Fecha</th>
-                    <th className="px-3 py-2.5">N° Comp.</th>
-                    <th className="px-3 py-2.5">Proveedor / Concepto</th>
-                    <th className="px-3 py-2.5 text-right">Importe</th>
-                    <th className="px-3 py-2.5">Minuta</th>
-                    <th className="px-3 py-2.5">Categorías / Obs.</th>
+                    {COLUMN_DEFS.map((col) => {
+                      const hasVal = colFilters[col.key].trim().length > 0;
+                      const isOpen = openColFilter === col.key;
+                      return (
+                        <th
+                          key={col.key}
+                          className={`relative px-3 py-2.5 ${col.alignRight ? 'text-right' : ''}`}
+                        >
+                          <div
+                            className={`inline-flex items-center gap-1 ${col.alignRight ? 'justify-end' : ''}`}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <span>{col.label}</span>
+                            <button
+                              type="button"
+                              onClick={() => setOpenColFilter(isOpen ? null : col.key)}
+                              title={`Filtrar por ${col.label}`}
+                              className={`rounded px-1 py-0.5 text-[10px] transition ${
+                                hasVal || isOpen
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'text-slate-400 hover:bg-slate-200 hover:text-slate-700'
+                              }`}
+                            >
+                              ▾
+                            </button>
+                          </div>
+
+                          {isOpen && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className={`absolute top-full z-30 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-2 text-left font-normal normal-case tracking-normal shadow-lg ${
+                                col.key === 'categorias' || col.alignRight ? 'right-2' : 'left-2'
+                              }`}
+                            >
+                              <input
+                                type="text"
+                                autoFocus
+                                value={colFilters[col.key]}
+                                onChange={(e) =>
+                                  setColFilters((prev) => ({
+                                    ...prev,
+                                    [col.key]: e.target.value,
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Escape' || e.key === 'Enter') {
+                                    setOpenColFilter(null);
+                                  }
+                                }}
+                                placeholder={`Filtrar ${col.label.toLowerCase()}…`}
+                                className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                              />
+                              {hasVal && (
+                                <div className="mt-1.5 flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setColFilters((prev) => ({ ...prev, [col.key]: '' }))
+                                    }
+                                    className="text-[11px] font-medium text-rose-600 hover:underline"
+                                  >
+                                    Limpiar
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1012,15 +1161,43 @@ export default function App() {
                       .map((id) => categoriesById.get(id))
                       .filter((c): c is AuditCategory => Boolean(c));
 
+                    const cancelLongPress = () => {
+                      if (longPressTimerRef.current !== null) {
+                        window.clearTimeout(longPressTimerRef.current);
+                        longPressTimerRef.current = null;
+                      }
+                    };
+
                     return (
                       <tr
                         key={it.id}
-                        onClick={() => setDetailItemId(it.id)}
+                        onPointerDown={(e) => {
+                          if (e.button !== 0) return;
+                          longPressTriggeredRef.current = false;
+                          const x = e.clientX;
+                          const y = e.clientY;
+                          cancelLongPress();
+                          longPressTimerRef.current = window.setTimeout(() => {
+                            longPressTriggeredRef.current = true;
+                            setCtxMenu({ itemId: it.id, x, y });
+                          }, 450);
+                        }}
+                        onPointerUp={cancelLongPress}
+                        onPointerLeave={cancelLongPress}
+                        onPointerCancel={cancelLongPress}
+                        onClick={() => {
+                          if (longPressTriggeredRef.current) {
+                            longPressTriggeredRef.current = false;
+                            return;
+                          }
+                          setDetailItemId(it.id);
+                        }}
                         onContextMenu={(e) => {
                           e.preventDefault();
+                          cancelLongPress();
                           setCtxMenu({ itemId: it.id, x: e.clientX, y: e.clientY });
                         }}
-                        className="cursor-pointer transition hover:bg-indigo-50/50"
+                        className="cursor-pointer select-none transition hover:bg-indigo-50/50"
                       >
                         <td className="whitespace-nowrap px-3 py-2.5">
                           <div className="flex items-center gap-1">
