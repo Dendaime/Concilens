@@ -12,6 +12,7 @@
   "dependencies": {
     "@kenjiuno/msgreader": "^1.29.0",
     "@tailwindcss/vite": "^4.3.5",
+    "buffer": "^6.0.3",
     "jspdf": "^4.2.1",
     "jszip": "^3.10.2",
     "lucide-react": "^1.78.0",

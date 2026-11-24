@@ -7,5 +7,10 @@ const isSingleFile = process.env.SINGLE_FILE === '1'
 
 export default defineConfig({
   base: './',
+  resolve: {
+    alias: {
+      buffer: 'buffer/',
+    },
+  },
   plugins: [react(), tailwindcss(), ...(isSingleFile ? [viteSingleFile()] : [])],
 })
