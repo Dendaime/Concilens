@@ -505,10 +505,12 @@ export default function App() {
       case 'minuta':
         return [rec ? rec.minutaFile : '(Sin minuta)'];
       case 'categorias': {
-        const names = (it.categoryIds ?? [])
+        const vals: string[] = (it.categoryIds ?? [])
           .map((id) => categoriesById.get(id)?.name)
           .filter((n): n is string => Boolean(n));
-        return names.length > 0 ? names : ['(Sin categoría)'];
+        if (it.auditorNote.trim()) vals.push('Con observación (📝)');
+        if (vals.length === 0) vals.push('(Sin categoría ni obs.)');
+        return vals;
       }
     }
   };
