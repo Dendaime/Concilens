@@ -15,6 +15,8 @@ import {
   Play,
   KeyRound,
   Loader2,
+  Cpu,
+  RefreshCw,
 } from 'lucide-react';
 import type {
   AuditStatus,
@@ -27,6 +29,7 @@ import type {
 import { parseSystemExcel } from './lib/excelParser';
 import { extractImagesFromDocxFiles } from './lib/docxParser';
 import { analyzeBatchWithGemini } from './lib/gemini';
+import { analyzeBatchWithOllama, fetchOllamaModels } from './lib/ollama';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
 import { exportAuditToExcel } from './lib/exportExcel';
 import { formatARS } from './lib/dateUtils';
@@ -34,6 +37,7 @@ import { buildDemoData } from './lib/demoData';
 import { ReceiptViewer } from './components/ReceiptViewer';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
+type AiProvider = 'ollama' | 'gemini';
 
 const GEMINI_MODELS = [
   { id: 'gemini-flash-latest', label: 'Gemini Flash Latest (Recomendado)' },
@@ -70,8 +74,19 @@ const STATUS_META: Record<
 
 export default function App() {
   // Config
+  const [provider, setProvider] = useState<AiProvider>(
+    () => (localStorage.getItem('concilens_provider') as AiProvider) || 'ollama'
+  );
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('concilens_api_key') ?? '');
   const [model, setModel] = useState('gemini-flash-latest');
+  const [ollamaUrl, setOllamaUrl] = useState(
+    () => localStorage.getItem('concilens_ollama_url') ?? 'http://localhost:11434'
+  );
+  const [ollamaModel, setOllamaModel] = useState(
+    () => localStorage.getItem('concilens_ollama_model') ?? 'qwen2.5vl:7b'
+  );
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [detectingOllama, setDetectingOllama] = useState(false);
   const [dateToleranceDays, setDateToleranceDays] = useState(2);
 
   // Loaded inputs
@@ -153,6 +168,32 @@ export default function App() {
     }
   };
 
+  const handleDetectOllama = async () => {
+    setErrorMsg(null);
+    setDetectingOllama(true);
+    try {
+      const models = await fetchOllamaModels(ollamaUrl);
+      setOllamaModels(models);
+      if (models.length > 0 && !models.includes(ollamaModel)) {
+        const visionPreferred =
+          models.find((m) => /vl|vision|gemma3|llava|minicpm/i.test(m)) ?? models[0];
+        setOllamaModel(visionPreferred);
+        localStorage.setItem('concilens_ollama_model', visionPreferred);
+      }
+      if (models.length === 0) {
+        setErrorMsg('Ollama conectado, pero no tenés modelos descargados. Corré: ollama pull qwen2.5vl:7b');
+      }
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? `${err.message} Asegurate de tener Ollama abierto y haber corrido: setx OLLAMA_ORIGINS "*"`
+          : 'No se pudo conectar a Ollama.'
+      );
+    } finally {
+      setDetectingOllama(false);
+    }
+  };
+
   const handleRunReconciliation = async () => {
     setErrorMsg(null);
     if (filteredMovements.length === 0) {
@@ -163,25 +204,41 @@ export default function App() {
       setErrorMsg('Primero cargá al menos una minuta .docx con imágenes.');
       return;
     }
-    if (!apiKey.trim()) {
+    if (provider === 'gemini' && !apiKey.trim()) {
       setErrorMsg('Ingresá tu API Key de Google AI Studio (Gemini) para analizar las imágenes.');
+      return;
+    }
+    if (provider === 'ollama' && !ollamaModel.trim()) {
+      setErrorMsg('Indicá el modelo de Ollama a usar (ej. qwen2.5vl:7b).');
       return;
     }
 
     setIsProcessing(true);
-    setProgress({ done: 0, total: extractedImages.length, label: 'Iniciando análisis con Gemini...' });
+    setProgress({
+      done: 0,
+      total: extractedImages.length,
+      label:
+        provider === 'ollama'
+          ? `Iniciando análisis local con Ollama (${ollamaModel})...`
+          : 'Iniciando análisis con Gemini...',
+    });
 
     try {
-      const receipts = await analyzeBatchWithGemini(
-        extractedImages,
-        {
-          apiKey: apiKey.trim(),
-          model,
-          dateToleranceDays,
-          amountTolerance: 0.05,
-        },
-        (done, total, label) => setProgress({ done, total, label })
-      );
+      const receipts =
+        provider === 'ollama'
+          ? await analyzeBatchWithOllama(extractedImages, ollamaUrl, ollamaModel.trim(), (done, total, label) =>
+              setProgress({ done, total, label })
+            )
+          : await analyzeBatchWithGemini(
+              extractedImages,
+              {
+                apiKey: apiKey.trim(),
+                model,
+                dateToleranceDays,
+                amountTolerance: 0.05,
+              },
+              (done, total, label) => setProgress({ done, total, label })
+            );
 
       setExtractedReceipts(receipts);
       const reconciled = reconcileMovementsAndReceipts(filteredMovements, receipts, {
@@ -192,7 +249,9 @@ export default function App() {
       setSelectedItemId(reconciled[0]?.id ?? null);
       setSetupExpanded(false);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Error durante el análisis con Gemini.');
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error durante el análisis de comprobantes.'
+      );
     } finally {
       setIsProcessing(false);
       setProgress(null);
@@ -457,48 +516,158 @@ export default function App() {
                   )}
                 </div>
 
-                {/* 3. Gemini Config & Run */}
+                {/* 3. AI Provider Config & Run */}
                 <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div className="space-y-2.5">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                      <KeyRound className="h-4 w-4 text-amber-600" />
-                      Google AI Studio (Gemini)
-                    </div>
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => handleApiKeyChange(e.target.value)}
-                      placeholder="Pegá tu Gemini API Key (AIza...)"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <select
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
-                      >
-                        {GEMINI_MODELS.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
-                        <span className="text-slate-500">Tol. días:</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={15}
-                          value={dateToleranceDays}
-                          onChange={(e) => {
-                            const v = Math.max(0, Number(e.target.value) || 0);
-                            setDateToleranceDays(v);
-                            handleReconcileOnly(selectedCajero, v);
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
+                        {provider === 'ollama' ? (
+                          <Cpu className="h-4 w-4 text-emerald-600" />
+                        ) : (
+                          <KeyRound className="h-4 w-4 text-amber-600" />
+                        )}
+                        Motor IA
+                      </div>
+                      <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-[11px] font-medium">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProvider('ollama');
+                            localStorage.setItem('concilens_provider', 'ollama');
                           }}
-                          className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
-                        />
+                          className={`rounded-md px-2 py-0.5 transition ${
+                            provider === 'ollama'
+                              ? 'bg-emerald-600 text-white'
+                              : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          Ollama Local
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProvider('gemini');
+                            localStorage.setItem('concilens_provider', 'gemini');
+                          }}
+                          className={`rounded-md px-2 py-0.5 transition ${
+                            provider === 'gemini'
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          Gemini API
+                        </button>
                       </div>
                     </div>
+
+                    {provider === 'ollama' ? (
+                      <>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="text"
+                            value={ollamaUrl}
+                            onChange={(e) => {
+                              setOllamaUrl(e.target.value);
+                              localStorage.setItem('concilens_ollama_url', e.target.value);
+                            }}
+                            placeholder="http://localhost:11434"
+                            className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-emerald-500 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={detectingOllama}
+                            onClick={handleDetectOllama}
+                            title="Detectar modelos instalados en Ollama"
+                            className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${detectingOllama ? 'animate-spin' : ''}`} />
+                            Detectar
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {ollamaModels.length > 0 ? (
+                            <select
+                              value={ollamaModel}
+                              onChange={(e) => {
+                                setOllamaModel(e.target.value);
+                                localStorage.setItem('concilens_ollama_model', e.target.value);
+                              }}
+                              className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
+                            >
+                              {ollamaModels.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={ollamaModel}
+                              onChange={(e) => {
+                                setOllamaModel(e.target.value);
+                                localStorage.setItem('concilens_ollama_model', e.target.value);
+                              }}
+                              placeholder="qwen2.5vl:7b"
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-emerald-500 focus:outline-none"
+                            />
+                          )}
+                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
+                            <span className="text-slate-500">Tol. días:</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={15}
+                              value={dateToleranceDays}
+                              onChange={(e) => {
+                                const v = Math.max(0, Number(e.target.value) || 0);
+                                setDateToleranceDays(v);
+                                handleReconcileOnly(selectedCajero, v);
+                              }}
+                              className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          type="password"
+                          value={apiKey}
+                          onChange={(e) => handleApiKeyChange(e.target.value)}
+                          placeholder="Pegá tu Gemini API Key (AIza...)"
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                        />
+                        <div className="grid grid-cols-2 gap-2">
+                          <select
+                            value={model}
+                            onChange={(e) => setModel(e.target.value)}
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
+                          >
+                            {GEMINI_MODELS.map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
+                            <span className="text-slate-500">Tol. días:</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={15}
+                              value={dateToleranceDays}
+                              onChange={(e) => {
+                                const v = Math.max(0, Number(e.target.value) || 0);
+                                setDateToleranceDays(v);
+                                handleReconcileOnly(selectedCajero, v);
+                              }}
+                              className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <button
@@ -510,7 +679,7 @@ export default function App() {
                     {isProcessing ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        Analizando hojas con Gemini...
+                        Analizando hojas...
                       </>
                     ) : (
                       <>
