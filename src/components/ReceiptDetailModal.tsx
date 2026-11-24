@@ -516,14 +516,44 @@ export function ReceiptDetailModal({
               placeholder="Escribí una observación de auditoría para este registro…"
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
-            <div className="mt-2 flex justify-end">
-              <button
-                type="button"
-                onClick={handleSaveObs}
-                className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-              >
-                Guardar observación
-              </button>
+            <div className="mt-2 grid grid-cols-3 items-center gap-2">
+              <div />
+              <div className="flex justify-center">
+                {totalCount > 1 && currentIndex >= 0 && (
+                  <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
+                    <button
+                      type="button"
+                      disabled={!hasPrev}
+                      onClick={onPrev}
+                      title="Movimiento anterior (←)"
+                      className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                    <span className="px-1 text-[11px] font-semibold text-slate-600 tabular-nums">
+                      {currentIndex + 1} / {totalCount}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!hasNext}
+                      onClick={onNext}
+                      title="Movimiento siguiente (→ o Enter)"
+                      className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleSaveObs}
+                  className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                >
+                  Guardar observación
+                </button>
+              </div>
             </div>
           </div>
         </div>
