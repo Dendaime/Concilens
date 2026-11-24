@@ -120,6 +120,7 @@ export default function App() {
 
   // Detail modal, column filters & right-click / long-press context menu
   const [detailItemId, setDetailItemId] = useState<string | null>(null);
+  const [modalNavIds, setModalNavIds] = useState<string[]>([]);
   const [ctxMenu, setCtxMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
   const [colFilters, setColFilters] = useState<Record<ColumnKey, string>>({
     estado: '',
@@ -1314,6 +1315,7 @@ export default function App() {
                             longPressTriggeredRef.current = false;
                             return;
                           }
+                          setModalNavIds(visibleItems.map((v) => v.id));
                           setDetailItemId(it.id);
                         }}
                         onContextMenu={(e) => {
@@ -1487,25 +1489,29 @@ export default function App() {
 
       {/* Hotelito-style Receipt Detail Modal */}
       {(() => {
-        const idx = detailItemId ? visibleItems.findIndex((it) => it.id === detailItemId) : -1;
+        const navList = modalNavIds.length > 0 ? modalNavIds : visibleItems.map((v) => v.id);
+        const idx = detailItemId ? navList.indexOf(detailItemId) : -1;
         return (
           <ReceiptDetailModal
             item={detailItem}
             imagesById={imagesById}
             categories={categories}
             currentIndex={idx}
-            totalCount={visibleItems.length}
+            totalCount={navList.length}
             hasPrev={idx > 0}
-            hasNext={idx >= 0 && idx < visibleItems.length - 1}
+            hasNext={idx >= 0 && idx < navList.length - 1}
             onPrev={() => {
-              if (idx > 0) setDetailItemId(visibleItems[idx - 1].id);
+              if (idx > 0) setDetailItemId(navList[idx - 1]);
             }}
             onNext={() => {
-              if (idx >= 0 && idx < visibleItems.length - 1) {
-                setDetailItemId(visibleItems[idx + 1].id);
+              if (idx >= 0 && idx < navList.length - 1) {
+                setDetailItemId(navList[idx + 1]);
               }
             }}
-            onClose={() => setDetailItemId(null)}
+            onClose={() => {
+              setDetailItemId(null);
+              setModalNavIds([]);
+            }}
             onChangeStatus={handleChangeStatus}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
