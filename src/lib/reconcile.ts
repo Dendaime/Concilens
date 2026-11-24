@@ -138,30 +138,63 @@ export function reconcileMovementsAndReceipts(
     });
   }
 
-  // Pass 2: 1-to-1 exact amount, but date outside tolerance -> 🟡 Revisar
+  // Pass 2: 1-to-1 exact amount where only the date differs -> 🟢 Conciliado with day-diff observation
+  const dateDiffCandidates: Array<{
+    sys: SystemMovement;
+    rec: ExtractedReceipt;
+    score: number;
+    dateDiff: number | null;
+    numMatch: boolean;
+  }> = [];
+
   for (const sys of movements) {
     if (usedSys.has(sys.id)) continue;
-    const rec = receipts.find(
-      (r) => !usedRec.has(r.id) && r.importe !== null && Math.abs(sys.total - r.importe) <= amountTolerance
-    );
-    if (!rec) continue;
+    for (const rec of receipts) {
+      if (usedRec.has(rec.id) || rec.importe === null) continue;
+      if (Math.abs(sys.total - rec.importe) > amountTolerance) continue;
 
-    usedSys.add(sys.id);
-    usedRec.add(rec.id);
-    const dateDiff = effectiveDateDiff(sys, rec);
-    const hasDup = rec.isDuplicateImage || rec.isDuplicateReceipt;
+      const dateDiff = effectiveDateDiff(sys, rec);
+      const numMatch = numbersMatch(sys.numero, rec.nroComprobante);
+      const textSim = textSimilarityScore(sys, rec);
+
+      let score = 50;
+      if (numMatch) score += 30;
+      score += Math.round(textSim * 20);
+      if (dateDiff !== null) score -= Math.min(20, dateDiff * 0.5);
+
+      dateDiffCandidates.push({ sys, rec, score, dateDiff, numMatch });
+    }
+  }
+
+  dateDiffCandidates.sort((a, b) => b.score - a.score);
+
+  for (const c of dateDiffCandidates) {
+    if (usedSys.has(c.sys.id) || usedRec.has(c.rec.id)) continue;
+    usedSys.add(c.sys.id);
+    usedRec.add(c.rec.id);
+
+    const hasDup = c.rec.isDuplicateImage || c.rec.isDuplicateReceipt;
+    const isIllegible = !c.rec.legible;
+    const obsText =
+      c.dateDiff !== null
+        ? `Diferencia de fecha: ${c.dateDiff} ${c.dateDiff === 1 ? 'día' : 'días'} (Sist: ${c.sys.fecha} vs Comp: ${c.rec.fecha || c.rec.minutaDate || '—'})`
+        : 'Diferencia de fecha (sin fecha legible en comprobante)';
+
+    const status = hasDup || isIllegible ? 'revisar' : 'conciliado';
 
     items.push({
-      id: `review-date-${sys.id}-${rec.id}`,
-      status: 'revisar',
-      reason: `Importe coincide, pero fecha difiere (${dateDiff !== null ? `${dateDiff} días` : 'sin fecha'})`,
-      matchScore: 55,
-      systemMovements: [sys],
-      receipts: [rec],
+      id: `match-datediff-${c.sys.id}-${c.rec.id}`,
+      status,
+      reason: c.numMatch
+        ? `Conciliado por importe y N° · ${obsText}`
+        : `Conciliado por importe · ${obsText}`,
+      matchScore: Math.min(95, Math.max(55, Math.round(c.score))),
+      systemMovements: [c.sys],
+      receipts: [c.rec],
       hasDuplicateAlert: hasDup,
-      duplicateDetails: rec.duplicateReason,
+      duplicateDetails: c.rec.duplicateReason,
       manualState: 'pendiente',
-      auditorNote: '',
+      auditorNote: obsText,
     });
   }
 
