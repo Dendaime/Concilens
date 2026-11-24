@@ -428,6 +428,10 @@ export default function App() {
     setSetupExpanded(true);
   };
 
+  const handleChangeStatus = (itemId: string, status: AuditStatus) => {
+    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, status } : it)));
+  };
+
   const handleSaveNote = (itemId: string, auditorNote: string) => {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
   };
@@ -1398,17 +1402,48 @@ export default function App() {
         )}
       </main>
 
-      {/* Right-click Floating Context Menu (Hotelito style) */}
+      {/* Right-click / Long-press Floating Context Menu (Hotelito style) */}
       {ctxMenu && ctxItem && (
         <div
           style={{
             position: 'fixed',
-            top: Math.min(ctxMenu.y, window.innerHeight - 260),
-            left: Math.min(ctxMenu.x, window.innerWidth - 230),
+            top: Math.min(ctxMenu.y, window.innerHeight - 330),
+            left: Math.min(ctxMenu.x, window.innerWidth - 240),
           }}
           onClick={(e) => e.stopPropagation()}
-          className="z-50 w-56 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl"
+          className="z-50 w-60 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl"
         >
+          <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            Cambiar estado
+          </p>
+          <div className="grid grid-cols-2 gap-1 px-1.5 pb-1.5">
+            {(
+              [
+                { key: 'conciliado', label: '🟢 Conciliado' },
+                { key: 'revisar', label: '🟡 Revisar' },
+                { key: 'sin_respaldo', label: '🔴 Sin respaldo' },
+                { key: 'no_registrado', label: '🔵 No reg.' },
+              ] as const
+            ).map((st) => (
+              <button
+                key={st.key}
+                type="button"
+                onClick={() => {
+                  handleChangeStatus(ctxItem.id, st.key);
+                  setCtxMenu(null);
+                }}
+                className={`rounded-lg border px-2 py-1 text-left text-[11px] font-medium transition ${
+                  ctxItem.status === st.key
+                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                {st.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="my-1 border-t border-slate-100" />
           <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
             Categorizar registro
           </p>
@@ -1456,6 +1491,7 @@ export default function App() {
         imagesById={imagesById}
         categories={categories}
         onClose={() => setDetailItemId(null)}
+        onChangeStatus={handleChangeStatus}
         onSaveNote={handleSaveNote}
         onToggleCategory={handleToggleCategory}
         onOpenCategoryManager={() => setCatModalOpen(true)}

@@ -10,14 +10,26 @@ import {
   Plus,
   Hand,
 } from 'lucide-react';
-import type { AuditCategory, ExtractedImage, ReconciliationItem } from '../types';
+import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
+
+const STATUS_OPTIONS: Array<{
+  key: AuditStatus;
+  label: string;
+  activeClass: string;
+}> = [
+  { key: 'conciliado', label: '🟢 Conciliado', activeClass: 'bg-emerald-600 text-white border-emerald-600' },
+  { key: 'revisar', label: '🟡 Revisar', activeClass: 'bg-amber-500 text-white border-amber-500' },
+  { key: 'sin_respaldo', label: '🔴 Sin respaldo', activeClass: 'bg-rose-600 text-white border-rose-600' },
+  { key: 'no_registrado', label: '🔵 No registrado', activeClass: 'bg-sky-600 text-white border-sky-600' },
+];
 
 interface ReceiptDetailModalProps {
   item: ReconciliationItem | null;
   imagesById: Map<string, ExtractedImage>;
   categories: AuditCategory[];
   onClose: () => void;
+  onChangeStatus: (itemId: string, status: AuditStatus) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
   onOpenCategoryManager: () => void;
@@ -28,6 +40,7 @@ export function ReceiptDetailModal({
   imagesById,
   categories,
   onClose,
+  onChangeStatus,
   onSaveNote,
   onToggleCategory,
   onOpenCategoryManager,
@@ -113,7 +126,30 @@ export function ReceiptDetailModal({
 
         {/* Scrollable Body */}
         <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
-          {/* Reason & Duplicate alert */}
+          {/* Status Switcher & Reason */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+            <span className="font-semibold text-slate-700">Estado del registro:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {STATUS_OPTIONS.map((opt) => {
+                const active = item.status === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => onChangeStatus(item.id, opt.key)}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                      active
+                        ? opt.activeClass
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="rounded-xl border border-sky-200 bg-sky-50/70 px-3.5 py-2.5 text-sky-900">
             <span className="font-semibold">Resultado del cruce: </span>
             {item.reason}
