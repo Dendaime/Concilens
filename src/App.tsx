@@ -36,8 +36,9 @@ import { ReceiptViewer } from './components/ReceiptViewer';
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
 
 const GEMINI_MODELS = [
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Recomendado)' },
-  { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Rápido / Económico)' },
+  { id: 'gemini-flash-latest', label: 'Gemini Flash Latest (Recomendado)' },
+  { id: 'gemini-3.0-flash', label: 'Gemini 3.0 Flash' },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Económico)' },
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Máxima precisión)' },
 ];
 
@@ -70,7 +71,7 @@ const STATUS_META: Record<
 export default function App() {
   // Config
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('concilens_api_key') ?? '');
-  const [model, setModel] = useState('gemini-2.5-flash');
+  const [model, setModel] = useState('gemini-flash-latest');
   const [dateToleranceDays, setDateToleranceDays] = useState(2);
 
   // Loaded inputs
