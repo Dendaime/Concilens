@@ -150,7 +150,7 @@ export async function analyzeImageWithGemini(
     const { mimeType, base64 } = await resizeImageForApi(image.dataUrl);
     let lastError: unknown;
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       try {
         rawReceipts = await callGeminiOnce(config.apiKey, config.model, mimeType, base64);
         setCachedReceipts(image.sha256, config.model, rawReceipts);
@@ -158,8 +158,9 @@ export async function analyzeImageWithGemini(
       } catch (err) {
         lastError = err;
         const status = (err as Error & { status?: number }).status;
-        if (status === 429 && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 2500 * (attempt + 1)));
+        const isRetryable = status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
+        if (isRetryable && attempt < 3) {
+          await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
           continue;
         }
         throw err;
