@@ -19,6 +19,7 @@ import {
   Save,
   FolderOpen,
   Trash2,
+  Mail,
 } from 'lucide-react';
 import type {
   AuditStatus,
@@ -45,6 +46,7 @@ import {
   type SavedSession,
 } from './lib/storage';
 import { ReceiptViewer } from './components/ReceiptViewer';
+import { OutlookImportModal } from './components/OutlookImportModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
 
@@ -101,6 +103,7 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [outlookModalOpen, setOutlookModalOpen] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
 
   // Restore saved session from IndexedDB on mount
@@ -599,9 +602,19 @@ export default function App() {
                 {/* 2. Minutas .docx */}
                 <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div>
-                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
-                      <FileText className="h-4 w-4 text-indigo-600" />
-                      Minutas de Caja (.docx en lote)
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                        <FileText className="h-4 w-4 text-indigo-600" />
+                        Minutas (.docx)
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setOutlookModalOpen(true)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100"
+                      >
+                        <Mail className="h-3 w-3" />
+                        Importar de Outlook
+                      </button>
                     </div>
                     <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-white px-3 py-5 text-center transition hover:border-indigo-400">
                       <span className="text-xs font-medium text-slate-700">
@@ -883,6 +896,12 @@ export default function App() {
           </section>
         )}
       </main>
+
+      <OutlookImportModal
+        isOpen={outlookModalOpen}
+        onClose={() => setOutlookModalOpen(false)}
+        onImportFiles={handleDocxUpload}
+      />
     </div>
   );
 }
