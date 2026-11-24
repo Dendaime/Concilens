@@ -1,10 +1,42 @@
 import { jsPDF } from 'jspdf';
 import type { ExtractedImage } from '../types';
 
-function loadImageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
+/**
+ * Re-encodes any JPEG/PNG through an HTML canvas into a clean baseline RGB JPEG
+ * so jsPDF never produces corrupted/striped pages from progressive or unusual JPEGs.
+ */
+function normalizeImageViaCanvas(
+  dataUrl: string,
+  maxDimension = 1800
+): Promise<{ cleanDataUrl: string; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onload = () => {
+      let width = img.naturalWidth;
+      let height = img.naturalHeight;
+      if (width > maxDimension || height > maxDimension) {
+        if (width >= height) {
+          height = Math.round((height * maxDimension) / width);
+          width = maxDimension;
+        } else {
+          width = Math.round((width * maxDimension) / height);
+          height = maxDimension;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('No se pudo inicializar canvas para generar el PDF.'));
+        return;
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      const cleanDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      resolve({ cleanDataUrl, width, height });
+    };
     img.onerror = () => reject(new Error('No se pudo leer la imagen para generar el PDF.'));
     img.src = dataUrl;
   });
@@ -28,7 +60,6 @@ export async function exportImagesToPdfForGemini(
   const margin = 8;
   const headerHeight = 8;
 
-  // Track 1-based page index per minuta file
   const pageCounters = new Map<string, number>();
 
   for (let i = 0; i < images.length; i++) {
@@ -38,12 +69,11 @@ export async function exportImagesToPdfForGemini(
     const filePage = (pageCounters.get(img.minutaFile) ?? 0) + 1;
     pageCounters.set(img.minutaFile, filePage);
 
-    // Header label so Gemini knows exact archivo_minuta and hoja
     pdf.setFontSize(9);
     pdf.setTextColor(71, 85, 105);
     pdf.text(`Archivo: ${img.minutaFile}  |  Hoja: ${filePage}`, margin, margin + 3);
 
-    const { width, height } = await loadImageDimensions(img.dataUrl);
+    const { cleanDataUrl, width, height } = await normalizeImageViaCanvas(img.dataUrl);
     const maxW = pageWidth - margin * 2;
     const maxH = pageHeight - margin * 2 - headerHeight;
     const ratio = Math.min(maxW / width, maxH / height);
@@ -52,8 +82,7 @@ export async function exportImagesToPdfForGemini(
     const x = (pageWidth - drawW) / 2;
     const y = margin + headerHeight;
 
-    const format = img.mimeType.includes('png') ? 'PNG' : 'JPEG';
-    pdf.addImage(img.dataUrl, format, x, y, drawW, drawH, undefined, 'FAST');
+    pdf.addImage(cleanDataUrl, 'JPEG', x, y, drawW, drawH);
   }
 
   pdf.save(filename);
