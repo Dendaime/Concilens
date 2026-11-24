@@ -1277,9 +1277,19 @@ export default function App() {
                       }
                     };
 
+                    const primaryCatColor = itemCats[0]?.color;
+
                     return (
                       <tr
                         key={it.id}
+                        style={
+                          primaryCatColor
+                            ? {
+                                backgroundColor: `${primaryCatColor}1a`,
+                                boxShadow: `inset 3px 0 0 ${primaryCatColor}`,
+                              }
+                            : undefined
+                        }
                         onPointerDown={(e) => {
                           if (e.button !== 0) return;
                           longPressTriggeredRef.current = false;
