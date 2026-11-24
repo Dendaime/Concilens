@@ -1486,16 +1486,33 @@ export default function App() {
       )}
 
       {/* Hotelito-style Receipt Detail Modal */}
-      <ReceiptDetailModal
-        item={detailItem}
-        imagesById={imagesById}
-        categories={categories}
-        onClose={() => setDetailItemId(null)}
-        onChangeStatus={handleChangeStatus}
-        onSaveNote={handleSaveNote}
-        onToggleCategory={handleToggleCategory}
-        onOpenCategoryManager={() => setCatModalOpen(true)}
-      />
+      {(() => {
+        const idx = detailItemId ? visibleItems.findIndex((it) => it.id === detailItemId) : -1;
+        return (
+          <ReceiptDetailModal
+            item={detailItem}
+            imagesById={imagesById}
+            categories={categories}
+            currentIndex={idx}
+            totalCount={visibleItems.length}
+            hasPrev={idx > 0}
+            hasNext={idx >= 0 && idx < visibleItems.length - 1}
+            onPrev={() => {
+              if (idx > 0) setDetailItemId(visibleItems[idx - 1].id);
+            }}
+            onNext={() => {
+              if (idx >= 0 && idx < visibleItems.length - 1) {
+                setDetailItemId(visibleItems[idx + 1].id);
+              }
+            }}
+            onClose={() => setDetailItemId(null)}
+            onChangeStatus={handleChangeStatus}
+            onSaveNote={handleSaveNote}
+            onToggleCategory={handleToggleCategory}
+            onOpenCategoryManager={() => setCatModalOpen(true)}
+          />
+        );
+      })()}
 
       {/* Hotelito-style Category Manager Modal */}
       <CategoryManagerModal

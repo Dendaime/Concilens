@@ -9,6 +9,8 @@ import {
   Tag,
   Plus,
   Hand,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -28,6 +30,12 @@ interface ReceiptDetailModalProps {
   item: ReconciliationItem | null;
   imagesById: Map<string, ExtractedImage>;
   categories: AuditCategory[];
+  currentIndex: number;
+  totalCount: number;
+  hasPrev: boolean;
+  hasNext: boolean;
+  onPrev: () => void;
+  onNext: () => void;
   onClose: () => void;
   onChangeStatus: (itemId: string, status: AuditStatus) => void;
   onSaveNote: (itemId: string, note: string) => void;
@@ -39,6 +47,12 @@ export function ReceiptDetailModal({
   item,
   imagesById,
   categories,
+  currentIndex,
+  totalCount,
+  hasPrev,
+  hasNext,
+  onPrev,
+  onNext,
   onClose,
   onChangeStatus,
   onSaveNote,
@@ -69,11 +83,23 @@ export function ReceiptDetailModal({
   useEffect(() => {
     if (!item) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === 'textarea' || tag === 'input') return;
+      if (e.key === 'ArrowLeft' && hasPrev) {
+        e.preventDefault();
+        onPrev();
+      } else if (e.key === 'ArrowRight' && hasNext) {
+        e.preventDefault();
+        onNext();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [item, onClose]);
+  }, [item, onClose, hasPrev, hasNext, onPrev, onNext]);
 
   if (!item) return null;
 
@@ -109,19 +135,46 @@ export function ReceiptDetailModal({
         className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header (Hotelito style) */}
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4">
+        {/* Header (Hotelito style + Prev/Next navigation) */}
+        <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4">
           <div className="min-w-0">
             <h2 className="truncate text-base font-bold text-slate-900">{title}</h2>
             <p className="mt-0.5 text-xs text-slate-500">{meta || item.reason}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-          >
-            Cerrar
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {totalCount > 1 && currentIndex >= 0 && (
+              <div className="mr-1 inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
+                <button
+                  type="button"
+                  disabled={!hasPrev}
+                  onClick={onPrev}
+                  title="Movimiento anterior (←)"
+                  className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <span className="px-1 text-[11px] font-semibold text-slate-600 tabular-nums">
+                  {currentIndex + 1} / {totalCount}
+                </span>
+                <button
+                  type="button"
+                  disabled={!hasNext}
+                  onClick={onNext}
+                  title="Movimiento siguiente (→)"
+                  className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+            >
+              Cerrar
+            </button>
+          </div>
         </div>
 
         {/* Scrollable Body */}
@@ -307,6 +360,12 @@ export function ReceiptDetailModal({
               )}
             </div>
             <div
+              onWheel={(e) => {
+                if (!activeImage) return;
+                e.preventDefault();
+                const delta = e.deltaY < 0 ? 0.2 : -0.2;
+                setZoom((z) => Math.min(5, Math.max(0.5, +(z + delta).toFixed(2))));
+              }}
               onPointerDown={(e) => {
                 if (!panMode || !activeImage || e.button !== 0) return;
                 e.currentTarget.setPointerCapture(e.pointerId);
