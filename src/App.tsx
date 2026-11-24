@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileSpreadsheet,
   FileText,
@@ -13,13 +13,12 @@ import {
   ChevronDown,
   ChevronUp,
   Play,
-  KeyRound,
-  Loader2,
-  Cpu,
-  RefreshCw,
   Copy,
   Check,
   MessageSquare,
+  Save,
+  FolderOpen,
+  Trash2,
 } from 'lucide-react';
 import type {
   AuditStatus,
@@ -31,25 +30,23 @@ import type {
 } from './types';
 import { parseSystemExcel } from './lib/excelParser';
 import { extractImagesFromDocxFiles } from './lib/docxParser';
-import { analyzeBatchWithGemini } from './lib/gemini';
-import { analyzeBatchWithOllama, fetchOllamaModels } from './lib/ollama';
 import { GEMINI_CHAT_PROMPT, parseManualGeminiJson } from './lib/manualJsonParser';
 import { exportImagesToPdfForGemini } from './lib/pdfExporter';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
 import { exportAuditToExcel } from './lib/exportExcel';
 import { formatARS } from './lib/dateUtils';
 import { buildDemoData } from './lib/demoData';
+import {
+  clearSessionInDb,
+  downloadSessionBackup,
+  loadSessionFromDb,
+  readSessionBackupFile,
+  saveSessionToDb,
+  type SavedSession,
+} from './lib/storage';
 import { ReceiptViewer } from './components/ReceiptViewer';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
-type AiProvider = 'chat' | 'gemini' | 'ollama';
-
-const GEMINI_MODELS = [
-  { id: 'gemini-flash-latest', label: 'Gemini Flash Latest (Recomendado)' },
-  { id: 'gemini-3.0-flash', label: 'Gemini 3.0 Flash' },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Económico)' },
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Máxima precisión)' },
-];
 
 const STATUS_META: Record<
   AuditStatus,
@@ -78,22 +75,9 @@ const STATUS_META: Record<
 };
 
 export default function App() {
-  // Config
-  const [provider, setProvider] = useState<AiProvider>(
-    () => (localStorage.getItem('concilens_provider') as AiProvider) || 'chat'
-  );
+  // Config & Chat JSON
   const [pastedJson, setPastedJson] = useState('');
   const [promptCopied, setPromptCopied] = useState(false);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('concilens_api_key') ?? '');
-  const [model, setModel] = useState('gemini-flash-latest');
-  const [ollamaUrl, setOllamaUrl] = useState(
-    () => localStorage.getItem('concilens_ollama_url') ?? 'http://localhost:11434'
-  );
-  const [ollamaModel, setOllamaModel] = useState(
-    () => localStorage.getItem('concilens_ollama_model') ?? 'qwen2.5vl:7b'
-  );
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [detectingOllama, setDetectingOllama] = useState(false);
   const [dateToleranceDays, setDateToleranceDays] = useState(2);
 
   // Loaded inputs
@@ -113,12 +97,92 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [setupExpanded, setSetupExpanded] = useState(true);
 
-  // Processing state
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number; label: string } | null>(
-    null
-  );
+  // Persistence & feedback
+  const [hydrated, setHydrated] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const backupInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Restore saved session from IndexedDB on mount
+  useEffect(() => {
+    let active = true;
+    loadSessionFromDb()
+      .then((saved) => {
+        if (!active || !saved) return;
+        setSystemFileName(saved.systemFileName);
+        setAllMovements(saved.allMovements);
+        setCajeros(saved.cajeros);
+        setSelectedCajero(saved.selectedCajero);
+        setDocxFileNames(saved.docxFileNames);
+        setExtractedImages(saved.extractedImages);
+        setExtractedReceipts(saved.extractedReceipts);
+        setPastedJson(saved.pastedJson);
+        setDateToleranceDays(saved.dateToleranceDays);
+        setItems(saved.items);
+        setSelectedItemId(saved.items[0]?.id ?? null);
+        setLastSavedAt(saved.savedAt);
+        if (saved.items.length > 0) setSetupExpanded(false);
+      })
+      .catch(() => {
+        // Ignore storage read errors on first run
+      })
+      .finally(() => {
+        if (active) setHydrated(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const buildCurrentSession = (): SavedSession => ({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    systemFileName,
+    allMovements,
+    cajeros,
+    selectedCajero,
+    docxFileNames,
+    extractedImages,
+    extractedReceipts,
+    pastedJson,
+    dateToleranceDays,
+    items,
+  });
+
+  // Auto-save to IndexedDB whenever work changes (debounced)
+  useEffect(() => {
+    if (!hydrated) return;
+    const hasData =
+      allMovements.length > 0 ||
+      extractedImages.length > 0 ||
+      pastedJson.trim().length > 0 ||
+      items.length > 0;
+    if (!hasData) return;
+
+    const timer = setTimeout(() => {
+      const session = buildCurrentSession();
+      saveSessionToDb(session)
+        .then(() => setLastSavedAt(session.savedAt))
+        .catch(() => {
+          // Ignore silent autosave errors
+        });
+    }, 500);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    hydrated,
+    systemFileName,
+    allMovements,
+    cajeros,
+    selectedCajero,
+    docxFileNames,
+    extractedImages,
+    extractedReceipts,
+    pastedJson,
+    dateToleranceDays,
+    items,
+  ]);
 
   const imagesById = useMemo(() => {
     const map = new Map<string, ExtractedImage>();
@@ -135,11 +199,6 @@ export default function App() {
     () => extractedImages.filter((i) => Boolean(i.duplicateOf)).length,
     [extractedImages]
   );
-
-  const handleApiKeyChange = (val: string) => {
-    setApiKey(val);
-    localStorage.setItem('concilens_api_key', val);
-  };
 
   const handleExcelUpload = async (file: File) => {
     setErrorMsg(null);
@@ -175,32 +234,6 @@ export default function App() {
     }
   };
 
-  const handleDetectOllama = async () => {
-    setErrorMsg(null);
-    setDetectingOllama(true);
-    try {
-      const models = await fetchOllamaModels(ollamaUrl);
-      setOllamaModels(models);
-      if (models.length > 0 && !models.includes(ollamaModel)) {
-        const visionPreferred =
-          models.find((m) => /vl|vision|gemma3|llava|minicpm/i.test(m)) ?? models[0];
-        setOllamaModel(visionPreferred);
-        localStorage.setItem('concilens_ollama_model', visionPreferred);
-      }
-      if (models.length === 0) {
-        setErrorMsg('Ollama conectado, pero no tenés modelos descargados. Corré: ollama pull qwen2.5vl:7b');
-      }
-    } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? `${err.message} Asegurate de tener Ollama abierto y haber corrido: setx OLLAMA_ORIGINS "*"`
-          : 'No se pudo conectar a Ollama.'
-      );
-    } finally {
-      setDetectingOllama(false);
-    }
-  };
-
   const handleCopyPrompt = async () => {
     try {
       await navigator.clipboard.writeText(GEMINI_CHAT_PROMPT);
@@ -211,70 +244,14 @@ export default function App() {
     }
   };
 
-  const handleRunReconciliation = async () => {
+  const handleRunReconciliation = () => {
     setErrorMsg(null);
     if (filteredMovements.length === 0) {
       setErrorMsg('Primero cargá el archivo Excel/CSV del sistema.');
       return;
     }
-
-    if (provider === 'chat') {
-      try {
-        const receipts = parseManualGeminiJson(pastedJson, extractedImages);
-        setExtractedReceipts(receipts);
-        const reconciled = reconcileMovementsAndReceipts(filteredMovements, receipts, {
-          dateToleranceDays,
-          amountTolerance: 0.05,
-        });
-        setItems(reconciled);
-        setSelectedItemId(reconciled[0]?.id ?? null);
-        setSetupExpanded(false);
-      } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : 'Error al procesar el JSON pegado.');
-      }
-      return;
-    }
-
-    if (extractedImages.length === 0) {
-      setErrorMsg('Primero cargá al menos una minuta .docx con imágenes.');
-      return;
-    }
-    if (provider === 'gemini' && !apiKey.trim()) {
-      setErrorMsg('Ingresá tu API Key de Google AI Studio (Gemini) para analizar las imágenes.');
-      return;
-    }
-    if (provider === 'ollama' && !ollamaModel.trim()) {
-      setErrorMsg('Indicá el modelo de Ollama a usar (ej. qwen2.5vl:7b).');
-      return;
-    }
-
-    setIsProcessing(true);
-    setProgress({
-      done: 0,
-      total: extractedImages.length,
-      label:
-        provider === 'ollama'
-          ? `Iniciando análisis local con Ollama (${ollamaModel})...`
-          : 'Iniciando análisis con Gemini...',
-    });
-
     try {
-      const receipts =
-        provider === 'ollama'
-          ? await analyzeBatchWithOllama(extractedImages, ollamaUrl, ollamaModel.trim(), (done, total, label) =>
-              setProgress({ done, total, label })
-            )
-          : await analyzeBatchWithGemini(
-              extractedImages,
-              {
-                apiKey: apiKey.trim(),
-                model,
-                dateToleranceDays,
-                amountTolerance: 0.05,
-              },
-              (done, total, label) => setProgress({ done, total, label })
-            );
-
+      const receipts = parseManualGeminiJson(pastedJson, extractedImages);
       setExtractedReceipts(receipts);
       const reconciled = reconcileMovementsAndReceipts(filteredMovements, receipts, {
         dateToleranceDays,
@@ -284,12 +261,7 @@ export default function App() {
       setSelectedItemId(reconciled[0]?.id ?? null);
       setSetupExpanded(false);
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Error durante el análisis de comprobantes.'
-      );
-    } finally {
-      setIsProcessing(false);
-      setProgress(null);
+      setErrorMsg(err instanceof Error ? err.message : 'Error al procesar el JSON pegado.');
     }
   };
 
@@ -314,7 +286,6 @@ export default function App() {
     setSetupExpanded(false);
   };
 
-  // Re-run reconciliation locally if user changes Cajero or date tolerance after receipts are extracted
   const handleReconcileOnly = (newCajero = selectedCajero, newTolerance = dateToleranceDays) => {
     if (extractedReceipts.length === 0 || allMovements.length === 0) return;
     const movs =
@@ -325,6 +296,54 @@ export default function App() {
     });
     setItems(reconciled);
     setSelectedItemId(reconciled[0]?.id ?? null);
+  };
+
+  const handleSaveBackup = () => {
+    downloadSessionBackup(buildCurrentSession());
+  };
+
+  const handleImportBackup = async (file: File) => {
+    setErrorMsg(null);
+    try {
+      const saved = await readSessionBackupFile(file);
+      setSystemFileName(saved.systemFileName);
+      setAllMovements(saved.allMovements);
+      setCajeros(saved.cajeros);
+      setSelectedCajero(saved.selectedCajero);
+      setDocxFileNames(saved.docxFileNames);
+      setExtractedImages(saved.extractedImages);
+      setExtractedReceipts(saved.extractedReceipts);
+      setPastedJson(saved.pastedJson);
+      setDateToleranceDays(saved.dateToleranceDays);
+      setItems(saved.items);
+      setSelectedItemId(saved.items[0]?.id ?? null);
+      setSetupExpanded(saved.items.length === 0);
+      await saveSessionToDb(saved);
+      setLastSavedAt(saved.savedAt);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Error al abrir el proyecto.');
+    }
+  };
+
+  const handleClearSession = async () => {
+    const ok = window.confirm(
+      '¿Seguro que querés limpiar la auditoría actual? Se borrará el progreso guardado en este navegador.'
+    );
+    if (!ok) return;
+    await clearSessionInDb().catch(() => {});
+    setSystemFileName(null);
+    setAllMovements([]);
+    setCajeros([]);
+    setSelectedCajero('TODOS');
+    setDocxFileNames([]);
+    setExtractedImages([]);
+    setExtractedReceipts([]);
+    setPastedJson('');
+    setItems([]);
+    setSelectedItemId(null);
+    setLastSavedAt(null);
+    setErrorMsg(null);
+    setSetupExpanded(true);
   };
 
   const handleUpdateManualState = (itemId: string, manualState: ManualReviewState) => {
@@ -369,6 +388,7 @@ export default function App() {
       if (!q) return true;
       const haystack = [
         it.reason,
+        it.auditorNote,
         ...it.systemMovements.map(
           (m) => `${m.numero} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
         ),
@@ -388,31 +408,90 @@ export default function App() {
     [items, selectedItemId]
   );
 
+  const formattedSavedTime = useMemo(() => {
+    if (!lastSavedAt) return null;
+    try {
+      return new Date(lastSavedAt).toLocaleTimeString('es-AR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return null;
+    }
+  }, [lastSavedAt]);
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
       {/* Top Navbar */}
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-sm">
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-base font-bold tracking-tight text-slate-900">Concilens</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold tracking-tight text-slate-900">Concilens</h1>
+                {formattedSavedTime && (
+                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                    Guardado {formattedSavedTime}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500">
                 Conciliación inteligente de minutas .docx vs. Anexo de Gastos
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={handleLoadDemo}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
               <Play className="h-3.5 w-3.5 text-indigo-600" />
-              Cargar Demo
+              Demo
+            </button>
+            <button
+              type="button"
+              onClick={() => backupInputRef.current?.click()}
+              title="Abrir un proyecto guardado (.json)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              <FolderOpen className="h-3.5 w-3.5 text-slate-500" />
+              Abrir
+            </button>
+            <input
+              ref={backupInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleImportBackup(f);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              disabled={allMovements.length === 0 && items.length === 0}
+              onClick={handleSaveBackup}
+              title="Descargar copia de respaldo del proyecto (.json)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Save className="h-3.5 w-3.5 text-slate-500" />
+              Guardar
+            </button>
+            <button
+              type="button"
+              disabled={allMovements.length === 0 && extractedImages.length === 0 && items.length === 0}
+              onClick={handleClearSession}
+              title="Limpiar auditoría actual"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Limpiar
             </button>
             <button
               type="button"
@@ -435,9 +514,9 @@ export default function App() {
             onClick={() => setSetupExpanded((v) => !v)}
             className="flex w-full items-center justify-between px-4 py-3 text-left"
           >
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold text-slate-900">
-                1. Carga de archivos y configuración IA
+                1. Carga de archivos y lectura con Gemini
               </span>
               {systemFileName && (
                 <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
@@ -545,282 +624,93 @@ export default function App() {
                     </label>
                   </div>
                   {docxFileNames.length > 0 && (
-                    <p className="mt-3 truncate text-[11px] text-slate-500" title={docxFileNames.join(', ')}>
+                    <p
+                      className="mt-3 truncate text-[11px] text-slate-500"
+                      title={docxFileNames.join(', ')}
+                    >
                       Archivos: {docxFileNames.join(', ')}
                     </p>
                   )}
                 </div>
 
-                {/* 3. AI Provider Config & Run */}
+                {/* 3. Gemini Chat Workflow */}
                 <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div className="space-y-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
-                        {provider === 'chat' ? (
-                          <MessageSquare className="h-4 w-4 text-indigo-600" />
-                        ) : provider === 'ollama' ? (
-                          <Cpu className="h-4 w-4 text-emerald-600" />
-                        ) : (
-                          <KeyRound className="h-4 w-4 text-amber-600" />
-                        )}
-                        Motor IA
+                        <MessageSquare className="h-4 w-4 text-indigo-600" />
+                        Lectura con Gemini Chat
                       </div>
-                      <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-[11px] font-medium">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setProvider('chat');
-                            localStorage.setItem('concilens_provider', 'chat');
+                      <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs">
+                        <span className="text-slate-500">Tol. días:</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={15}
+                          value={dateToleranceDays}
+                          onChange={(e) => {
+                            const v = Math.max(0, Number(e.target.value) || 0);
+                            setDateToleranceDays(v);
+                            handleReconcileOnly(selectedCajero, v);
                           }}
-                          className={`rounded-md px-2 py-0.5 transition ${
-                            provider === 'chat'
-                              ? 'bg-indigo-600 text-white'
-                              : 'text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          Gemini Chat
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setProvider('gemini');
-                            localStorage.setItem('concilens_provider', 'gemini');
-                          }}
-                          className={`rounded-md px-2 py-0.5 transition ${
-                            provider === 'gemini'
-                              ? 'bg-amber-600 text-white'
-                              : 'text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          API
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setProvider('ollama');
-                            localStorage.setItem('concilens_provider', 'ollama');
-                          }}
-                          className={`rounded-md px-2 py-0.5 transition ${
-                            provider === 'ollama'
-                              ? 'bg-emerald-600 text-white'
-                              : 'text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          Ollama
-                        </button>
+                          className="w-8 text-right font-semibold text-slate-800 focus:outline-none"
+                        />
                       </div>
                     </div>
 
-                    {provider === 'chat' ? (
-                      <>
-                        <div className="flex flex-wrap items-center justify-between gap-1.5">
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              disabled={extractedImages.length === 0}
-                              onClick={() =>
-                                exportImagesToPdfForGemini(extractedImages).catch((e) =>
-                                  setErrorMsg(e instanceof Error ? e.message : 'Error al generar PDF.')
-                                )
-                              }
-                              title="Genera 1 solo PDF con todas las hojas de tus .docx para subir a Gemini Pro"
-                              className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                              1. Bajar PDF
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleCopyPrompt}
-                              className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
-                            >
-                              {promptCopied ? (
-                                <>
-                                  <Check className="h-3.5 w-3.5 text-emerald-600" />
-                                  ¡Copiado!
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="h-3.5 w-3.5" />
-                                  2. Prompt
-                                </>
-                              )}
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs">
-                            <span className="text-slate-500">Tol.:</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={15}
-                              value={dateToleranceDays}
-                              onChange={(e) => {
-                                const v = Math.max(0, Number(e.target.value) || 0);
-                                setDateToleranceDays(v);
-                                handleReconcileOnly(selectedCajero, v);
-                              }}
-                              className="w-8 text-right font-semibold text-slate-800 focus:outline-none"
-                            />
-                          </div>
-                        </div>
-                        <textarea
-                          rows={3}
-                          value={pastedJson}
-                          onChange={(e) => setPastedJson(e.target.value)}
-                          placeholder='3. Subí el PDF + Prompt a tu Gemini Pro y pegá acá el JSON que devuelve...'
-                          className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
-                        />
-                      </>
-                    ) : provider === 'ollama' ? (
-                      <>
-                        <div className="flex gap-1.5">
-                          <input
-                            type="text"
-                            value={ollamaUrl}
-                            onChange={(e) => {
-                              setOllamaUrl(e.target.value);
-                              localStorage.setItem('concilens_ollama_url', e.target.value);
-                            }}
-                            placeholder="http://localhost:11434"
-                            className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-emerald-500 focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            disabled={detectingOllama}
-                            onClick={handleDetectOllama}
-                            title="Detectar modelos instalados en Ollama"
-                            className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-                          >
-                            <RefreshCw className={`h-3.5 w-3.5 ${detectingOllama ? 'animate-spin' : ''}`} />
-                            Detectar
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          {ollamaModels.length > 0 ? (
-                            <select
-                              value={ollamaModel}
-                              onChange={(e) => {
-                                setOllamaModel(e.target.value);
-                                localStorage.setItem('concilens_ollama_model', e.target.value);
-                              }}
-                              className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
-                            >
-                              {ollamaModels.map((m) => (
-                                <option key={m} value={m}>
-                                  {m}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <input
-                              type="text"
-                              value={ollamaModel}
-                              onChange={(e) => {
-                                setOllamaModel(e.target.value);
-                                localStorage.setItem('concilens_ollama_model', e.target.value);
-                              }}
-                              placeholder="qwen2.5vl:7b"
-                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-emerald-500 focus:outline-none"
-                            />
-                          )}
-                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
-                            <span className="text-slate-500">Tol. días:</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={15}
-                              value={dateToleranceDays}
-                              onChange={(e) => {
-                                const v = Math.max(0, Number(e.target.value) || 0);
-                                setDateToleranceDays(v);
-                                handleReconcileOnly(selectedCajero, v);
-                              }}
-                              className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
-                            />
-                          </div>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <input
-                          type="password"
-                          value={apiKey}
-                          onChange={(e) => handleApiKeyChange(e.target.value)}
-                          placeholder="Pegá tu Gemini API Key (AIza...)"
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
-                        />
-                        <div className="grid grid-cols-2 gap-2">
-                          <select
-                            value={model}
-                            onChange={(e) => setModel(e.target.value)}
-                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
-                          >
-                            {GEMINI_MODELS.map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.label}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
-                            <span className="text-slate-500">Tol. días:</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={15}
-                              value={dateToleranceDays}
-                              onChange={(e) => {
-                                const v = Math.max(0, Number(e.target.value) || 0);
-                                setDateToleranceDays(v);
-                                handleReconcileOnly(selectedCajero, v);
-                              }}
-                              className="w-10 text-right font-semibold text-slate-800 focus:outline-none"
-                            />
-                          </div>
-                        </div>
-                      </>
-                    )}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={extractedImages.length === 0}
+                        onClick={() =>
+                          exportImagesToPdfForGemini(extractedImages).catch((e) =>
+                            setErrorMsg(e instanceof Error ? e.message : 'Error al generar PDF.')
+                          )
+                        }
+                        title="Genera 1 solo PDF con todas las hojas de tus .docx para subir a Gemini Pro"
+                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        1. Bajar PDF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCopyPrompt}
+                        className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                      >
+                        {promptCopied ? (
+                          <>
+                            <Check className="h-3.5 w-3.5 text-emerald-600" />
+                            ¡Prompt copiado!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3.5 w-3.5" />
+                            2. Copiar Prompt
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <textarea
+                      rows={3}
+                      value={pastedJson}
+                      onChange={(e) => setPastedJson(e.target.value)}
+                      placeholder='3. Subí el PDF + Prompt a tu Gemini Pro y pegá acá el JSON que devuelve...'
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                    />
                   </div>
 
                   <button
                     type="button"
-                    disabled={isProcessing}
                     onClick={handleRunReconciliation}
-                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700"
                   >
-                    {isProcessing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Analizando hojas...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Procesar y Conciliar
-                      </>
-                    )}
+                    <Sparkles className="h-4 w-4" />
+                    Procesar y Conciliar
                   </button>
                 </div>
               </div>
-
-              {/* Progress Bar */}
-              {progress && (
-                <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/70 p-3">
-                  <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-indigo-900">
-                    <span>{progress.label}</span>
-                    <span className="tabular-nums">
-                      {progress.done} / {progress.total} hojas
-                    </span>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-200">
-                    <div
-                      className="h-full bg-indigo-600 transition-all duration-300"
-                      style={{
-                        width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
 
               {/* Error Banner */}
               {errorMsg && (
