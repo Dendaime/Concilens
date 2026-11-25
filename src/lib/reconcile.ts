@@ -12,6 +12,17 @@ function numbersMatch(sysNum: string, recNum: string): boolean {
   return a === b || a.endsWith(b) || b.endsWith(a);
 }
 
+/**
+ * Returns true when BOTH system and receipt have real receipt numbers (>= 4 digits)
+ * and they do not match (ignoring short internal OP numbers like "73").
+ */
+function numbersConflict(sysNum: string, recNum: string): boolean {
+  const a = normalizeDigits(sysNum);
+  const b = normalizeDigits(recNum);
+  if (a.length < 4 || b.length < 4) return false;
+  return !numbersMatch(sysNum, recNum);
+}
+
 function textSimilarityScore(sys: SystemMovement, rec: ExtractedReceipt): number {
   const sysText = `${sys.razonSocial} ${sys.descripcion} ${sys.balance}`
     .toLowerCase()
@@ -82,7 +93,9 @@ export function reconcileMovementsAndReceipts(
     rec: ExtractedReceipt;
     score: number;
     dateDiff: number | null;
+    amountDiff: number;
     numMatch: boolean;
+    numConflict: boolean;
   }> = [];
 
   for (const sys of movements) {
@@ -93,15 +106,17 @@ export function reconcileMovementsAndReceipts(
 
       const dateDiff = effectiveDateDiff(sys, rec);
       const numMatch = numbersMatch(sys.numero, rec.nroComprobante);
+      const numConflict = numbersConflict(sys.numero, rec.nroComprobante);
       const textSim = textSimilarityScore(sys, rec);
 
       if (dateDiff !== null && dateDiff <= dateToleranceDays) {
         let score = 70;
         if (numMatch) score += 25;
+        if (numConflict) score -= 20;
         if (dateDiff === 0) score += 10;
         else score += Math.max(0, 8 - dateDiff * 2);
         score += Math.round(textSim * 15);
-        candidates.push({ sys, rec, score, dateDiff, numMatch });
+        candidates.push({ sys, rec, score, dateDiff, amountDiff, numMatch, numConflict });
       }
     }
   }
@@ -116,10 +131,14 @@ export function reconcileMovementsAndReceipts(
     const hasDup = c.rec.isDuplicateImage || c.rec.isDuplicateReceipt;
     const isIllegible = !c.rec.legible;
 
-    const status = hasDup || isIllegible ? 'revisar' : 'conciliado';
+    const status = hasDup || isIllegible || c.numConflict ? 'revisar' : 'conciliado';
     const reasons: string[] = [];
     if (c.numMatch) reasons.push('Coincide importe y N° comprobante');
     else reasons.push('Coincide importe y fecha');
+    if (c.numConflict) {
+      reasons.push(`N° difiere (Sist: ${c.sys.numero} vs Comp: ${c.rec.nroComprobante})`);
+    }
+    if (c.amountDiff > 0.005) reasons.push(`dif. $${c.amountDiff.toFixed(2)}`);
     if (c.dateDiff !== null && c.dateDiff > 0) reasons.push(`dif. ${c.dateDiff}d`);
     if (isIllegible) reasons.push('comprobante poco legible');
     if (hasDup) reasons.push('posible duplicado');
@@ -140,30 +159,36 @@ export function reconcileMovementsAndReceipts(
   }
 
   // Pass 2: 1-to-1 exact amount where only the date differs -> 🟢 Conciliado with day-diff observation
+  // (or 🟡 Revisar if receipt numbers conflict)
   const dateDiffCandidates: Array<{
     sys: SystemMovement;
     rec: ExtractedReceipt;
     score: number;
     dateDiff: number | null;
+    amountDiff: number;
     numMatch: boolean;
+    numConflict: boolean;
   }> = [];
 
   for (const sys of movements) {
     if (usedSys.has(sys.id)) continue;
     for (const rec of receipts) {
       if (usedRec.has(rec.id) || rec.importe === null) continue;
-      if (Math.abs(sys.total - rec.importe) > amountTolerance) continue;
+      const amountDiff = Math.abs(sys.total - rec.importe);
+      if (amountDiff > amountTolerance) continue;
 
       const dateDiff = effectiveDateDiff(sys, rec);
       const numMatch = numbersMatch(sys.numero, rec.nroComprobante);
+      const numConflict = numbersConflict(sys.numero, rec.nroComprobante);
       const textSim = textSimilarityScore(sys, rec);
 
       let score = 50;
       if (numMatch) score += 30;
+      if (numConflict) score -= 20;
       score += Math.round(textSim * 20);
       if (dateDiff !== null) score -= Math.min(20, dateDiff * 0.5);
 
-      dateDiffCandidates.push({ sys, rec, score, dateDiff, numMatch });
+      dateDiffCandidates.push({ sys, rec, score, dateDiff, amountDiff, numMatch, numConflict });
     }
   }
 
@@ -181,15 +206,21 @@ export function reconcileMovementsAndReceipts(
         ? `Diferencia de fecha: ${c.dateDiff} ${c.dateDiff === 1 ? 'día' : 'días'} (Sist: ${c.sys.fecha} vs Comp: ${c.rec.fecha || c.rec.minutaDate || '—'})`
         : 'Diferencia de fecha (sin fecha legible en comprobante)';
 
-    const status = hasDup || isIllegible ? 'revisar' : 'conciliado';
+    const status = hasDup || isIllegible || c.numConflict ? 'revisar' : 'conciliado';
+    const reasons: string[] = [
+      c.numMatch ? 'Conciliado por importe y N°' : 'Conciliado por importe',
+      obsText,
+    ];
+    if (c.numConflict) {
+      reasons.push(`N° difiere (Sist: ${c.sys.numero} vs Comp: ${c.rec.nroComprobante})`);
+    }
+    if (c.amountDiff > 0.005) reasons.push(`dif. $${c.amountDiff.toFixed(2)}`);
 
     items.push({
       id: `match-datediff-${c.sys.id}-${c.rec.id}`,
       status,
-      reason: c.numMatch
-        ? `Conciliado por importe y N° · ${obsText}`
-        : `Conciliado por importe · ${obsText}`,
-      matchScore: Math.min(95, Math.max(55, Math.round(c.score))),
+      reason: reasons.join(' · '),
+      matchScore: Math.min(95, Math.max(40, Math.round(c.score))),
       systemMovements: [c.sys],
       receipts: [c.rec],
       hasDuplicateAlert: hasDup,
