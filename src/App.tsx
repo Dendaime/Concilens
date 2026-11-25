@@ -577,6 +577,28 @@ export default function App() {
     );
   };
 
+  const handleToggleManualValidated = (itemId: string) => {
+    const existing = categories.find(
+      (c) =>
+        c.name
+          .trim()
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '') === 'validado manualmente'
+    );
+    let catId = existing?.id;
+    if (!catId) {
+      catId = 'cat-validado-manual';
+      const newCat: AuditCategory = {
+        id: catId,
+        name: 'Validado manualmente',
+        color: '#16a34a',
+      };
+      setCategories((prev) => [...prev, newCat]);
+    }
+    handleToggleCategory(itemId, catId);
+  };
+
   const handleCreateCategory = (name: string, color: string) => {
     const newCat: AuditCategory = {
       id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -1650,6 +1672,7 @@ export default function App() {
             onUnlink={handleUnlinkItem}
             onLinkItems={handleLinkItems}
             onToggleFlipMinuta={handleToggleFlipMinuta}
+            onToggleManualValidated={handleToggleManualValidated}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
             onOpenCategoryManager={() => setCatModalOpen(true)}

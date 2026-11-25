@@ -18,6 +18,7 @@ import {
   ArrowLeftRight,
   Link2,
   Search,
+  CheckCircle2,
 } from 'lucide-react';
 import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -54,6 +55,7 @@ interface ReceiptDetailModalProps {
   onUnlink: (itemId: string) => void;
   onLinkItems: (currentItemId: string, targetItemId: string) => void;
   onToggleFlipMinuta: (minutaFile: string) => void;
+  onToggleManualValidated: (itemId: string) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
   onOpenCategoryManager: () => void;
@@ -77,6 +79,7 @@ export function ReceiptDetailModal({
   onUnlink,
   onLinkItems,
   onToggleFlipMinuta,
+  onToggleManualValidated,
   onSaveNote,
   onToggleCategory,
   onOpenCategoryManager,
@@ -214,6 +217,15 @@ export function ReceiptDetailModal({
   const sys = item.systemMovements[0] ?? null;
   const assignedIds = new Set(item.categoryIds ?? []);
   const assignedCats = categories.filter((c) => assignedIds.has(c.id));
+  const manualValCat = categories.find(
+    (c) =>
+      c.name
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') === 'validado manualmente'
+  );
+  const isManualValidated = manualValCat ? assignedIds.has(manualValCat.id) : false;
   const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
   const hasNote = item.auditorNote.trim().length > 0;
 
@@ -259,7 +271,7 @@ export function ReceiptDetailModal({
             <h2 className="truncate text-sm font-bold text-slate-900">{title}</h2>
             <p className="truncate text-[11px] text-slate-500">{meta || item.reason}</p>
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-3">
             {totalCount > 1 && currentIndex >= 0 && (
               <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
                 <button
@@ -285,6 +297,28 @@ export function ReceiptDetailModal({
                 </button>
               </div>
             )}
+            <button
+              type="button"
+              onClick={() => onToggleManualValidated(item.id)}
+              title="Acceso directo: categoría 'Validado manualmente'"
+              style={
+                isManualValidated && manualValCat
+                  ? {
+                      backgroundColor: manualValCat.color,
+                      borderColor: manualValCat.color,
+                      color: '#ffffff',
+                    }
+                  : undefined
+              }
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                isManualValidated
+                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              }`}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Validado
+            </button>
             <button
               type="button"
               onClick={onClose}
