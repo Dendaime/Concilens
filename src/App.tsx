@@ -62,17 +62,22 @@ type ColumnKey =
   | 'observacion'
   | 'auditoria';
 
-const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }> = [
-  { key: 'estado', label: 'Estado' },
-  { key: 'situacion', label: 'Situación' },
-  { key: 'fecha', label: 'Fecha' },
-  { key: 'caja', label: 'N° Caja' },
-  { key: 'numero', label: 'N° Comp.' },
-  { key: 'proveedor', label: 'Proveedor / Concepto' },
-  { key: 'importe', label: 'Importe', alignRight: true },
-  { key: 'minuta', label: 'Minuta' },
-  { key: 'observacion', label: 'Obs. Concilens' },
-  { key: 'auditoria', label: 'Observación Auditoría' },
+const COLUMN_DEFS: Array<{
+  key: ColumnKey;
+  label: string;
+  alignRight?: boolean;
+  sortType: 'text' | 'number' | 'date';
+}> = [
+  { key: 'estado', label: 'Estado', sortType: 'text' },
+  { key: 'situacion', label: 'Situación', sortType: 'text' },
+  { key: 'fecha', label: 'Fecha', sortType: 'date' },
+  { key: 'caja', label: 'N° Caja', sortType: 'number' },
+  { key: 'numero', label: 'N° Comp.', sortType: 'number' },
+  { key: 'proveedor', label: 'Proveedor / Concepto', sortType: 'text' },
+  { key: 'importe', label: 'Importe', alignRight: true, sortType: 'number' },
+  { key: 'minuta', label: 'Minuta', sortType: 'text' },
+  { key: 'observacion', label: 'Obs. Concilens', sortType: 'text' },
+  { key: 'auditoria', label: 'Observación Auditoría', sortType: 'text' },
 ];
 
 const STATUS_META: Record<
@@ -211,6 +216,9 @@ export default function App() {
     auditoria: [],
   });
   const [openColFilter, setOpenColFilter] = useState<ColumnKey | null>(null);
+  const [sortConfig, setSortConfig] = useState<{ key: ColumnKey; dir: 'asc' | 'desc' } | null>(
+    null
+  );
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
 
@@ -1049,22 +1057,99 @@ export default function App() {
     }
   };
 
+  const matchesFilters = (it: ReconciliationItem, excludeCol?: ColumnKey): boolean => {
+    const isLinked = it.systemMovements.length > 0 && it.receipts.length > 0;
+    const base: AuditStatus = isLinked
+      ? 'conciliado'
+      : it.systemMovements.length > 0
+        ? 'sin_respaldo'
+        : 'no_registrado';
+
+    if (activeTab === 'excepciones' && isLinked && it.status !== 'revisar') {
+      return false;
+    }
+    if (activeTab === 'duplicados' && !it.hasDuplicateAlert) return false;
+    if (activeTab === 'conciliado' && !isLinked) return false;
+    if (activeTab === 'sin_respaldo' && base !== 'sin_respaldo') return false;
+    if (activeTab === 'no_registrado' && base !== 'no_registrado') return false;
+    if (activeTab === 'validado' && it.status !== 'validado') return false;
+    if (activeTab === 'revisar' && it.status !== 'revisar') return false;
+
+    for (const col of COLUMN_DEFS) {
+      if (col.key === excludeCol) continue;
+      const vals = getItemColValues(it, col.key);
+      const selected = colSelectedValues[col.key];
+      if (selected.length > 0 && !vals.some((v) => selected.includes(v))) {
+        return false;
+      }
+      const txtFilter = colFilters[col.key].trim().toLowerCase();
+      if (txtFilter && selected.length === 0) {
+        const extra =
+          col.key === 'observacion'
+            ? ` ${it.auditorNote}`
+            : col.key === 'auditoria'
+              ? ` ${it.auditField ?? ''}`
+              : col.key === 'proveedor'
+                ? ` ${it.reason}`
+                : '';
+        const combined = `${vals.join(' ')}${extra}`.toLowerCase();
+        if (!combined.includes(txtFilter)) return false;
+      }
+    }
+
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const haystack = [
+      STATUS_META[it.status].label,
+      it.reason,
+      it.auditorNote,
+      it.auditField ?? '',
+      ...it.systemMovements.map(
+        (m) =>
+          `${m.numero} ${m.caja} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
+      ),
+      ...it.receipts.map(
+        (r) =>
+          `${r.nroComprobante} ${r.proveedorOConcepto} ${r.minutaFile} ${r.fecha ?? ''} ${r.importe ?? ''}`
+      ),
+    ]
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(q);
+  };
+
   const uniqueColValues = useMemo(() => {
     const result = {} as Record<ColumnKey, Array<{ value: string; count: number }>>;
     for (const col of COLUMN_DEFS) {
       const map = new Map<string, number>();
       for (const it of items) {
+        if (!matchesFilters(it, col.key)) continue;
         for (const val of getItemColValues(it, col.key)) {
           map.set(val, (map.get(val) ?? 0) + 1);
         }
       }
       result[col.key] = Array.from(map.entries())
         .map(([value, count]) => ({ value, count }))
-        .sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true }));
+        .sort((a, b) => {
+          const aEmpty = a.value.startsWith('(');
+          const bEmpty = b.value.startsWith('(');
+          if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+          if (col.key === 'fecha') {
+            const isoA = normalizeDateString(a.value)?.iso ?? '';
+            const isoB = normalizeDateString(b.value)?.iso ?? '';
+            return isoA.localeCompare(isoB);
+          }
+          if (col.key === 'importe') {
+            const numA = parseCurrencyAmount(a.value) ?? 0;
+            const numB = parseCurrencyAmount(b.value) ?? 0;
+            return numA - numB;
+          }
+          return a.value.localeCompare(b.value, 'es', { numeric: true, sensitivity: 'base' });
+        });
     }
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, activeTab, colFilters, colSelectedValues, searchQuery]);
 
   const activeColFiltersCount = useMemo(
     () =>
@@ -1110,67 +1195,48 @@ export default function App() {
   };
 
   const visibleItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return items.filter((it) => {
-      const isLinked = it.systemMovements.length > 0 && it.receipts.length > 0;
-      const base: AuditStatus = isLinked
-        ? 'conciliado'
-        : it.systemMovements.length > 0
-          ? 'sin_respaldo'
-          : 'no_registrado';
+    const filtered = items.filter((it) => matchesFilters(it));
+    if (!sortConfig) return filtered;
 
-      if (activeTab === 'excepciones' && isLinked && it.status !== 'revisar') {
-        return false;
+    const { key, dir } = sortConfig;
+    const mult = dir === 'asc' ? 1 : -1;
+
+    const getSortVal = (it: ReconciliationItem) => {
+      const sys = it.systemMovements[0];
+      const rec = it.receipts[0];
+      switch (key) {
+        case 'fecha':
+          return sys?.fechaIso ?? rec?.fechaIso ?? '';
+        case 'importe':
+          return sys?.total ?? it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
+        case 'caja':
+          return sys?.caja || '';
+        case 'numero':
+          return sys?.numero || rec?.nroComprobante || '';
+        case 'observacion':
+          return it.auditorNote.trim();
+        case 'auditoria':
+          return (it.auditField ?? '').trim();
+        default:
+          return getItemColValues(it, key)[0] ?? '';
       }
-      if (activeTab === 'duplicados' && !it.hasDuplicateAlert) return false;
-      if (activeTab === 'conciliado' && !isLinked) return false;
-      if (activeTab === 'sin_respaldo' && base !== 'sin_respaldo') return false;
-      if (activeTab === 'no_registrado' && base !== 'no_registrado') return false;
-      if (activeTab === 'validado' && it.status !== 'validado') return false;
-      if (activeTab === 'revisar' && it.status !== 'revisar') return false;
+    };
 
-      // Per-column checkbox & text filters
-      for (const col of COLUMN_DEFS) {
-        const vals = getItemColValues(it, col.key);
-        const selected = colSelectedValues[col.key];
-        if (selected.length > 0 && !vals.some((v) => selected.includes(v))) {
-          return false;
-        }
-        const txtFilter = colFilters[col.key].trim().toLowerCase();
-        if (txtFilter && selected.length === 0) {
-          const extra =
-            col.key === 'observacion'
-              ? ` ${it.auditorNote}`
-              : col.key === 'auditoria'
-                ? ` ${it.auditField ?? ''}`
-                : col.key === 'proveedor'
-                  ? ` ${it.reason}`
-                  : '';
-          const combined = `${vals.join(' ')}${extra}`.toLowerCase();
-          if (!combined.includes(txtFilter)) return false;
-        }
+    return [...filtered].sort((a, b) => {
+      const va = getSortVal(a);
+      const vb = getSortVal(b);
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return (va - vb) * mult;
       }
-
-      if (!q) return true;
-      const haystack = [
-        STATUS_META[it.status].label,
-        it.reason,
-        it.auditorNote,
-        it.auditField ?? '',
-        ...it.systemMovements.map(
-          (m) => `${m.numero} ${m.caja} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
-        ),
-        ...it.receipts.map(
-          (r) =>
-            `${r.nroComprobante} ${r.proveedorOConcepto} ${r.minutaFile} ${r.fecha ?? ''} ${r.importe ?? ''}`
-        ),
-      ]
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
+      const sa = String(va);
+      const sb = String(vb);
+      const aEmpty = !sa || sa.startsWith('(');
+      const bEmpty = !sb || sb.startsWith('(');
+      if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+      return sa.localeCompare(sb, 'es', { numeric: true, sensitivity: 'base' }) * mult;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, activeTab, colFilters, colSelectedValues, searchQuery]);
+  }, [items, activeTab, colFilters, colSelectedValues, searchQuery, sortConfig]);
 
   const detailItem = useMemo(
     () => items.find((it) => it.id === detailItemId) ?? null,
@@ -1797,6 +1863,16 @@ export default function App() {
                     {activeColFiltersCount === 1 ? 'filtro' : 'filtros'} ×
                   </button>
                 )}
+                {sortConfig && (
+                  <button
+                    type="button"
+                    onClick={() => setSortConfig(null)}
+                    className="rounded-md bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-300"
+                  >
+                    Orden: {COLUMN_DEFS.find((c) => c.key === sortConfig.key)?.label}{' '}
+                    {sortConfig.dir === 'asc' ? '↑' : '↓'} ×
+                  </button>
+                )}
               </div>
               <span>
                 Clic simple: ventana de comprobante · Clic sostenido (o derecho): cambiar estado
@@ -1812,12 +1888,30 @@ export default function App() {
                       const hasVal =
                         colFilters[col.key].trim().length > 0 ||
                         colSelectedValues[col.key].length > 0;
+                      const isSortedAsc =
+                        sortConfig?.key === col.key && sortConfig.dir === 'asc';
+                      const isSortedDesc =
+                        sortConfig?.key === col.key && sortConfig.dir === 'desc';
+                      const isSorted = isSortedAsc || isSortedDesc;
                       const isOpen = openColFilter === col.key;
                       const filterQ = colFilters[col.key].trim().toLowerCase();
                       const options = (uniqueColValues[col.key] ?? []).filter((opt) =>
                         !filterQ ? true : opt.value.toLowerCase().includes(filterQ)
                       );
                       const selectedSet = new Set(colSelectedValues[col.key]);
+
+                      const ascLabel =
+                        col.sortType === 'date'
+                          ? 'Más antiguas primero'
+                          : col.sortType === 'number'
+                            ? 'Menor a mayor'
+                            : 'Ordenar A → Z';
+                      const descLabel =
+                        col.sortType === 'date'
+                          ? 'Más recientes primero'
+                          : col.sortType === 'number'
+                            ? 'Mayor a menor'
+                            : 'Ordenar Z → A';
 
                       return (
                         <th
@@ -1832,14 +1926,14 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => setOpenColFilter(isOpen ? null : col.key)}
-                              title={`Filtrar por ${col.label}`}
+                              title={`Ordenar o filtrar por ${col.label}`}
                               className={`rounded px-1 py-0.5 text-[10px] transition ${
-                                hasVal || isOpen
+                                hasVal || isOpen || isSorted
                                   ? 'bg-indigo-600 text-white'
                                   : 'text-slate-400 hover:bg-slate-200 hover:text-slate-700'
                               }`}
                             >
-                              ▾
+                              {isSortedAsc ? '↑' : isSortedDesc ? '↓' : '▾'}
                             </button>
                           </div>
 
@@ -1852,6 +1946,44 @@ export default function App() {
                                   : 'left-2'
                               }`}
                             >
+                              {/* Sort controls */}
+                              <div className="mb-2 flex flex-col gap-0.5 border-b border-slate-100 pb-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSortConfig(
+                                      isSortedAsc ? null : { key: col.key, dir: 'asc' }
+                                    );
+                                    setOpenColFilter(null);
+                                  }}
+                                  className={`flex items-center justify-between rounded-lg px-2 py-1 text-left text-[11px] transition ${
+                                    isSortedAsc
+                                      ? 'bg-indigo-50 font-semibold text-indigo-700'
+                                      : 'text-slate-700 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  <span>↑ {ascLabel}</span>
+                                  {isSortedAsc && <span className="text-[10px]">✓</span>}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSortConfig(
+                                      isSortedDesc ? null : { key: col.key, dir: 'desc' }
+                                    );
+                                    setOpenColFilter(null);
+                                  }}
+                                  className={`flex items-center justify-between rounded-lg px-2 py-1 text-left text-[11px] transition ${
+                                    isSortedDesc
+                                      ? 'bg-indigo-50 font-semibold text-indigo-700'
+                                      : 'text-slate-700 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  <span>↓ {descLabel}</span>
+                                  {isSortedDesc && <span className="text-[10px]">✓</span>}
+                                </button>
+                              </div>
+
                               <input
                                 type="text"
                                 autoFocus
