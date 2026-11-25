@@ -21,6 +21,7 @@ import {
   Trash2,
   Tag,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 import type {
   AuditCategory,
@@ -394,6 +395,87 @@ export default function App() {
       amountTolerance: 0.05,
     });
     setItems(reconciled);
+  };
+
+  const handleSmartReconcile = () => {
+    if (items.length === 0) return;
+
+    // Preserve any item that already has a category assigned (e.g. "Validado manualmente")
+    // or was manually linked by the auditor.
+    const lockedItems = items.filter(
+      (it) => (it.categoryIds?.length ?? 0) > 0 || it.id.startsWith('linked-')
+    );
+    const unlockedItems = items.filter(
+      (it) => (it.categoryIds?.length ?? 0) === 0 && !it.id.startsWith('linked-')
+    );
+
+    if (unlockedItems.length === 0) {
+      window.alert('Todos los registros ya están categorizados o vinculados manualmente.');
+      return;
+    }
+
+    const ok = window.confirm(
+      `Se conservarán intactos ${lockedItems.length} registros ya categorizados/vinculados y se volverán a conciliar los ${unlockedItems.length} restantes con las reglas nuevas (prioridad de N° y bloqueo de N° distintos).\n\n¿Continuar?`
+    );
+    if (!ok) return;
+
+    const lockedSysIds = new Set<string>();
+    const lockedRecIds = new Set<string>();
+    for (const it of lockedItems) {
+      for (const m of it.systemMovements) lockedSysIds.add(m.id);
+      for (const r of it.receipts) lockedRecIds.add(r.id);
+    }
+
+    // Preserve any custom manual notes written on unlocked items
+    const customNotesBySys = new Map<string, string>();
+    const customNotesByRec = new Map<string, string>();
+    for (const it of unlockedItems) {
+      const note = it.auditorNote.trim();
+      if (!note || note.startsWith('Diferencia de fecha:')) continue;
+      for (const m of it.systemMovements) customNotesBySys.set(m.id, note);
+      for (const r of it.receipts) customNotesByRec.set(r.id, note);
+    }
+
+    // Collect unlocked movements and receipts
+    const remainingMovs = filteredMovements.filter((m) => !lockedSysIds.has(m.id));
+    const recSource =
+      extractedReceipts.length > 0
+        ? extractedReceipts
+        : items.flatMap((it) => it.receipts);
+    const seenRec = new Set<string>();
+    const remainingRecs: ExtractedReceipt[] = [];
+    for (const r of recSource) {
+      if (lockedRecIds.has(r.id) || seenRec.has(r.id)) continue;
+      seenRec.add(r.id);
+      remainingRecs.push(r);
+    }
+
+    const reReconciled = reconcileMovementsAndReceipts(remainingMovs, remainingRecs, {
+      dateToleranceDays,
+      amountTolerance: 0.05,
+    }).map((it) => {
+      const recoveredNote =
+        it.systemMovements.map((m) => customNotesBySys.get(m.id)).find(Boolean) ??
+        it.receipts.map((r) => customNotesByRec.get(r.id)).find(Boolean);
+      if (!recoveredNote) return it;
+      const mergedNote = it.auditorNote.trim()
+        ? `${it.auditorNote.trim()} | ${recoveredNote}`
+        : recoveredNote;
+      return { ...it, auditorNote: mergedNote };
+    });
+
+    const combined = [...reReconciled, ...lockedItems];
+    const order: Record<AuditStatus, number> = {
+      revisar: 0,
+      sin_respaldo: 1,
+      no_registrado: 2,
+      conciliado: 3,
+    };
+    combined.sort((a, b) => order[a.status] - order[b.status]);
+
+    setItems(combined);
+    setDetailItemId(null);
+    setModalNavIds([]);
   };
 
   const handleSaveBackup = () => {
@@ -870,6 +952,16 @@ export default function App() {
             >
               <Save className="h-3.5 w-3.5 text-slate-500" />
               Guardar
+            </button>
+            <button
+              type="button"
+              disabled={items.length === 0}
+              onClick={handleSmartReconcile}
+              title="Re-conciliar registros pendientes con las reglas actuales conservando tus categorías y vinculaciones manuales"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Re-conciliar
             </button>
             <button
               type="button"
