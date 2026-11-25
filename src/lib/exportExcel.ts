@@ -1,14 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { ReconciliationItem } from '../types';
 
-const STATUS_LABELS: Record<ReconciliationItem['status'], string> = {
-  validado: 'Validado',
-  conciliado: 'Conciliado',
-  revisar: 'Revisar',
-  sin_respaldo: 'Sin respaldo',
-  no_registrado: 'No registrado',
-};
-
 export function exportAuditToExcel(
   items: ReconciliationItem[],
   filename = 'concilens-auditoria.xlsx'
@@ -19,8 +11,22 @@ export function exportAuditToExcel(
     const totalSys = item.systemMovements.reduce((s, m) => s + m.total, 0);
     const totalRec = item.receipts.reduce((s, r) => s + (r.importe ?? 0), 0);
 
+    const isLinked = item.systemMovements.length > 0 && item.receipts.length > 0;
+    const estado = isLinked
+      ? 'Conciliado'
+      : item.systemMovements.length > 0
+        ? 'Sin respaldo'
+        : 'No registrado';
+    const situacion =
+      item.status === 'validado'
+        ? 'Validado'
+        : item.status === 'revisar'
+          ? 'Revisar'
+          : '';
+
     return {
-      Estado: STATUS_LABELS[item.status],
+      Estado: estado,
+      Situacion: situacion,
       Observacion_Concilens: item.auditorNote,
       Observacion_Auditoria: item.auditField ?? '',
       Motivo: item.reason,

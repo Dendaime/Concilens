@@ -52,6 +52,7 @@ import { ReceiptDetailModal } from './components/ReceiptDetailModal';
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
 type ColumnKey =
   | 'estado'
+  | 'situacion'
   | 'fecha'
   | 'numero'
   | 'proveedor'
@@ -62,6 +63,7 @@ type ColumnKey =
 
 const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }> = [
   { key: 'estado', label: 'Estado' },
+  { key: 'situacion', label: 'Situación' },
   { key: 'fecha', label: 'Fecha' },
   { key: 'numero', label: 'N° Comp.' },
   { key: 'proveedor', label: 'Proveedor / Concepto' },
@@ -180,6 +182,7 @@ export default function App() {
   const [ctxMenu, setCtxMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
   const [colFilters, setColFilters] = useState<Record<ColumnKey, string>>({
     estado: '',
+    situacion: '',
     fecha: '',
     numero: '',
     proveedor: '',
@@ -190,6 +193,7 @@ export default function App() {
   });
   const [colSelectedValues, setColSelectedValues] = useState<Record<ColumnKey, string[]>>({
     estado: [],
+    situacion: [],
     fecha: [],
     numero: [],
     proveedor: [],
@@ -721,11 +725,12 @@ export default function App() {
           : it.systemMovements.length > 0
             ? 'sin_respaldo'
             : 'no_registrado';
-        const vals = [STATUS_META[base].label];
-        if (it.status === 'validado' || it.status === 'revisar') {
-          vals.push(STATUS_META[it.status].label);
-        }
-        return vals;
+        return [STATUS_META[base].label];
+      }
+      case 'situacion': {
+        if (it.status === 'validado') return ['Validado'];
+        if (it.status === 'revisar') return ['Revisar'];
+        return ['(Pendiente)'];
       }
       case 'fecha':
         return [sys?.fecha ?? rec?.fecha ?? '(Sin fecha)'];
@@ -772,6 +777,7 @@ export default function App() {
   const clearColFilters = () => {
     setColFilters({
       estado: '',
+      situacion: '',
       fecha: '',
       numero: '',
       proveedor: '',
@@ -782,6 +788,7 @@ export default function App() {
     });
     setColSelectedValues({
       estado: [],
+      situacion: [],
       fecha: [],
       numero: [],
       proveedor: [],
@@ -1479,28 +1486,13 @@ export default function App() {
                                   : 'no_registrado';
                               const baseMeta = STATUS_META[base];
                               const BaseIcon = baseMeta.icon;
-                              const showOverlay =
-                                it.status === 'validado' || it.status === 'revisar';
-                              const overlayMeta = showOverlay ? STATUS_META[it.status] : null;
-                              const OverlayIcon = overlayMeta?.icon;
-
                               return (
-                                <>
-                                  <span
-                                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${baseMeta.badgeClass}`}
-                                  >
-                                    <BaseIcon className="h-3 w-3" />
-                                    {baseMeta.label}
-                                  </span>
-                                  {overlayMeta && OverlayIcon && (
-                                    <span
-                                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${overlayMeta.badgeClass}`}
-                                    >
-                                      <OverlayIcon className="h-3 w-3" />
-                                      {overlayMeta.label}
-                                    </span>
-                                  )}
-                                </>
+                                <span
+                                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${baseMeta.badgeClass}`}
+                                >
+                                  <BaseIcon className="h-3 w-3" />
+                                  {baseMeta.label}
+                                </span>
                               );
                             })()}
                             {it.hasDuplicateAlert && (
@@ -1509,6 +1501,23 @@ export default function App() {
                               </span>
                             )}
                           </div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5">
+                          {(() => {
+                            if (it.status !== 'validado' && it.status !== 'revisar') {
+                              return <span className="text-slate-300">—</span>;
+                            }
+                            const sitMeta = STATUS_META[it.status];
+                            const SitIcon = sitMeta.icon;
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${sitMeta.badgeClass}`}
+                              >
+                                <SitIcon className="h-3 w-3" />
+                                {sitMeta.label}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-slate-600 tabular-nums">
                           {sys?.fecha ?? rec?.fecha ?? '—'}
