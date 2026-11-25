@@ -803,6 +803,22 @@ export function ReceiptDetailModal({
             <div className="flex-1 divide-y divide-slate-100 overflow-y-auto">
               {(() => {
                 const refAmount = sys?.total ?? activeReceipt?.importe ?? 0;
+                const refNum = (sys?.numero || activeReceipt?.nroComprobante || '')
+                  .replace(/\D/g, '')
+                  .replace(/^0+/, '');
+                const hasSameNum = (cand: ReconciliationItem) => {
+                  if (refNum.length < 4) return false;
+                  const cNum = (
+                    cand.systemMovements[0]?.numero ||
+                    cand.receipts[0]?.nroComprobante ||
+                    ''
+                  )
+                    .replace(/\D/g, '')
+                    .replace(/^0+/, '');
+                  if (cNum.length < 4) return false;
+                  return cNum === refNum || cNum.endsWith(refNum) || refNum.endsWith(cNum);
+                };
+
                 const q = linkQuery.trim().toLowerCase();
                 const filtered = linkCandidates
                   .filter((cand) => {
@@ -827,6 +843,9 @@ export function ReceiptDetailModal({
                     return hay.includes(q);
                   })
                   .sort((a, b) => {
+                    const numA = hasSameNum(a) ? 1 : 0;
+                    const numB = hasSameNum(b) ? 1 : 0;
+                    if (numA !== numB) return numB - numA;
                     const amtA = a.systemMovements[0]?.total ?? a.receipts[0]?.importe ?? 0;
                     const amtB = b.systemMovements[0]?.total ?? b.receipts[0]?.importe ?? 0;
                     return Math.abs(amtA - refAmount) - Math.abs(amtB - refAmount);
@@ -845,6 +864,7 @@ export function ReceiptDetailModal({
                   const cRec = cand.receipts[0];
                   const amt = cSys?.total ?? cRec?.importe ?? 0;
                   const exactMatch = Math.abs(amt - refAmount) <= 0.05;
+                  const numMatch = hasSameNum(cand);
 
                   return (
                     <button
@@ -857,10 +877,15 @@ export function ReceiptDetailModal({
                       className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-indigo-50/70"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <span className="truncate text-xs font-semibold text-slate-900">
                             {cSys?.descripcion || cSys?.razonSocial || cRec?.proveedorOConcepto || '—'}
                           </span>
+                          {numMatch && (
+                            <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">
+                              Mismo N°
+                            </span>
+                          )}
                           {exactMatch && (
                             <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
                               Mismo importe

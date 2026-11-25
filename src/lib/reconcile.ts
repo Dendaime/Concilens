@@ -87,6 +87,71 @@ export function reconcileMovementsAndReceipts(
   const usedRec = new Set<string>();
   const items: ReconciliationItem[] = [];
 
+  // Pass 0 (Highest priority): Exact amount + exact receipt number (>= 4 digits), regardless of date difference.
+  // Prevents a generic same-day/same-amount receipt from stealing a movement that has an exact N° match.
+  const exactNumCandidates: Array<{
+    sys: SystemMovement;
+    rec: ExtractedReceipt;
+    dateDiff: number | null;
+    amountDiff: number;
+    score: number;
+  }> = [];
+
+  for (const sys of movements) {
+    if (normalizeDigits(sys.numero).length < 4) continue;
+    for (const rec of receipts) {
+      if (rec.importe === null || normalizeDigits(rec.nroComprobante).length < 4) continue;
+      const amountDiff = Math.abs(sys.total - rec.importe);
+      if (amountDiff > amountTolerance) continue;
+      if (!numbersMatch(sys.numero, rec.nroComprobante)) continue;
+
+      const dateDiff = effectiveDateDiff(sys, rec);
+      const textSim = textSimilarityScore(sys, rec);
+      let score = 100 + Math.round(textSim * 15);
+      if (dateDiff !== null) score -= Math.min(15, dateDiff * 0.25);
+      exactNumCandidates.push({ sys, rec, dateDiff, amountDiff, score });
+    }
+  }
+
+  exactNumCandidates.sort((a, b) => b.score - a.score);
+
+  for (const c of exactNumCandidates) {
+    if (usedSys.has(c.sys.id) || usedRec.has(c.rec.id)) continue;
+    usedSys.add(c.sys.id);
+    usedRec.add(c.rec.id);
+
+    const hasDup = c.rec.isDuplicateImage || c.rec.isDuplicateReceipt;
+    const isIllegible = !c.rec.legible;
+    const status = hasDup || isIllegible ? 'revisar' : 'conciliado';
+
+    const reasons: string[] = ['Coincide importe y N° comprobante'];
+    let auditorNote = '';
+    if (c.dateDiff !== null && c.dateDiff > dateToleranceDays) {
+      const obsText = `Diferencia de fecha: ${c.dateDiff} ${c.dateDiff === 1 ? 'día' : 'días'} (Sist: ${c.sys.fecha} vs Comp: ${c.rec.fecha || c.rec.minutaDate || '—'})`;
+      reasons.push(obsText);
+      auditorNote = obsText;
+    } else if (c.dateDiff !== null && c.dateDiff > 0) {
+      reasons.push(`dif. ${c.dateDiff}d`);
+    }
+    if (c.amountDiff > 0.005) reasons.push(`dif. $${c.amountDiff.toFixed(2)}`);
+    if (isIllegible) reasons.push('comprobante poco legible');
+    if (hasDup) reasons.push('posible duplicado');
+
+    items.push({
+      id: `match-num-${c.sys.id}-${c.rec.id}`,
+      status,
+      reason: reasons.join(' · '),
+      matchScore: 100,
+      systemMovements: [c.sys],
+      receipts: [c.rec],
+      hasDuplicateAlert: hasDup,
+      duplicateDetails: c.rec.duplicateReason,
+      manualState: 'pendiente',
+      categoryIds: [],
+      auditorNote,
+    });
+  }
+
   // Pass 1: 1-to-1 exact amount + within date tolerance (prioritizing receipt number & vendor match)
   const candidates: Array<{
     sys: SystemMovement;
@@ -99,8 +164,9 @@ export function reconcileMovementsAndReceipts(
   }> = [];
 
   for (const sys of movements) {
+    if (usedSys.has(sys.id)) continue;
     for (const rec of receipts) {
-      if (rec.importe === null) continue;
+      if (usedRec.has(rec.id) || rec.importe === null) continue;
       const amountDiff = Math.abs(sys.total - rec.importe);
       if (amountDiff > amountTolerance) continue;
 
@@ -278,6 +344,40 @@ export function reconcileMovementsAndReceipts(
         auditorNote: '',
       });
     }
+  }
+
+  // Pass 3b: Exact receipt number (>= 5 digits) match with different amount -> 🟡 Revisar
+  for (const sys of movements) {
+    if (usedSys.has(sys.id) || normalizeDigits(sys.numero).length < 5) continue;
+    const rec = receipts.find(
+      (r) =>
+        !usedRec.has(r.id) &&
+        normalizeDigits(r.nroComprobante).length >= 5 &&
+        numbersMatch(sys.numero, r.nroComprobante)
+    );
+    if (!rec) continue;
+
+    usedSys.add(sys.id);
+    usedRec.add(rec.id);
+    const hasDup = rec.isDuplicateImage || rec.isDuplicateReceipt;
+    const diffStr =
+      rec.importe !== null
+        ? `Sist: $${sys.total.toFixed(2)} vs Comp: $${rec.importe.toFixed(2)}`
+        : 'sin importe legible';
+
+    items.push({
+      id: `review-num-amt-${sys.id}-${rec.id}`,
+      status: 'revisar',
+      reason: `Coincide N° comprobante (${sys.numero}), pero difiere el importe (${diffStr})`,
+      matchScore: 65,
+      systemMovements: [sys],
+      receipts: [rec],
+      hasDuplicateAlert: hasDup,
+      duplicateDetails: rec.duplicateReason,
+      manualState: 'pendiente',
+      categoryIds: [],
+      auditorNote: `Revisar importe: ${diffStr}`,
+    });
   }
 
   // Pass 4: Remaining unmatched system movements -> 🔴 Sin respaldo
