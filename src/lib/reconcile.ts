@@ -152,7 +152,7 @@ export function reconcileMovementsAndReceipts(
     });
   }
 
-  // Pass 1: 1-to-1 exact amount + within date tolerance (prioritizing receipt number & vendor match)
+  // Pass 1: 1-to-1 exact amount + within date tolerance (never matching conflicting >=4-digit receipt numbers)
   const candidates: Array<{
     sys: SystemMovement;
     rec: ExtractedReceipt;
@@ -160,7 +160,6 @@ export function reconcileMovementsAndReceipts(
     dateDiff: number | null;
     amountDiff: number;
     numMatch: boolean;
-    numConflict: boolean;
   }> = [];
 
   for (const sys of movements) {
@@ -169,20 +168,19 @@ export function reconcileMovementsAndReceipts(
       if (usedRec.has(rec.id) || rec.importe === null) continue;
       const amountDiff = Math.abs(sys.total - rec.importe);
       if (amountDiff > amountTolerance) continue;
+      if (numbersConflict(sys.numero, rec.nroComprobante)) continue;
 
       const dateDiff = effectiveDateDiff(sys, rec);
       const numMatch = numbersMatch(sys.numero, rec.nroComprobante);
-      const numConflict = numbersConflict(sys.numero, rec.nroComprobante);
       const textSim = textSimilarityScore(sys, rec);
 
       if (dateDiff !== null && dateDiff <= dateToleranceDays) {
         let score = 70;
         if (numMatch) score += 25;
-        if (numConflict) score -= 20;
         if (dateDiff === 0) score += 10;
         else score += Math.max(0, 8 - dateDiff * 2);
         score += Math.round(textSim * 15);
-        candidates.push({ sys, rec, score, dateDiff, amountDiff, numMatch, numConflict });
+        candidates.push({ sys, rec, score, dateDiff, amountDiff, numMatch });
       }
     }
   }
@@ -197,13 +195,10 @@ export function reconcileMovementsAndReceipts(
     const hasDup = c.rec.isDuplicateImage || c.rec.isDuplicateReceipt;
     const isIllegible = !c.rec.legible;
 
-    const status = hasDup || isIllegible || c.numConflict ? 'revisar' : 'conciliado';
+    const status = hasDup || isIllegible ? 'revisar' : 'conciliado';
     const reasons: string[] = [];
     if (c.numMatch) reasons.push('Coincide importe y N° comprobante');
     else reasons.push('Coincide importe y fecha');
-    if (c.numConflict) {
-      reasons.push(`N° difiere (Sist: ${c.sys.numero} vs Comp: ${c.rec.nroComprobante})`);
-    }
     if (c.amountDiff > 0.005) reasons.push(`dif. $${c.amountDiff.toFixed(2)}`);
     if (c.dateDiff !== null && c.dateDiff > 0) reasons.push(`dif. ${c.dateDiff}d`);
     if (isIllegible) reasons.push('comprobante poco legible');
@@ -224,8 +219,7 @@ export function reconcileMovementsAndReceipts(
     });
   }
 
-  // Pass 2: 1-to-1 exact amount where only the date differs -> 🟢 Conciliado with day-diff observation
-  // (or 🟡 Revisar if receipt numbers conflict)
+  // Pass 2: 1-to-1 exact amount where only the date differs (never matching conflicting >=4-digit receipt numbers)
   const dateDiffCandidates: Array<{
     sys: SystemMovement;
     rec: ExtractedReceipt;
@@ -233,7 +227,6 @@ export function reconcileMovementsAndReceipts(
     dateDiff: number | null;
     amountDiff: number;
     numMatch: boolean;
-    numConflict: boolean;
   }> = [];
 
   for (const sys of movements) {
@@ -242,19 +235,18 @@ export function reconcileMovementsAndReceipts(
       if (usedRec.has(rec.id) || rec.importe === null) continue;
       const amountDiff = Math.abs(sys.total - rec.importe);
       if (amountDiff > amountTolerance) continue;
+      if (numbersConflict(sys.numero, rec.nroComprobante)) continue;
 
       const dateDiff = effectiveDateDiff(sys, rec);
       const numMatch = numbersMatch(sys.numero, rec.nroComprobante);
-      const numConflict = numbersConflict(sys.numero, rec.nroComprobante);
       const textSim = textSimilarityScore(sys, rec);
 
       let score = 50;
       if (numMatch) score += 30;
-      if (numConflict) score -= 20;
       score += Math.round(textSim * 20);
       if (dateDiff !== null) score -= Math.min(20, dateDiff * 0.5);
 
-      dateDiffCandidates.push({ sys, rec, score, dateDiff, amountDiff, numMatch, numConflict });
+      dateDiffCandidates.push({ sys, rec, score, dateDiff, amountDiff, numMatch });
     }
   }
 
@@ -272,14 +264,11 @@ export function reconcileMovementsAndReceipts(
         ? `Diferencia de fecha: ${c.dateDiff} ${c.dateDiff === 1 ? 'día' : 'días'} (Sist: ${c.sys.fecha} vs Comp: ${c.rec.fecha || c.rec.minutaDate || '—'})`
         : 'Diferencia de fecha (sin fecha legible en comprobante)';
 
-    const status = hasDup || isIllegible || c.numConflict ? 'revisar' : 'conciliado';
+    const status = hasDup || isIllegible ? 'revisar' : 'conciliado';
     const reasons: string[] = [
       c.numMatch ? 'Conciliado por importe y N°' : 'Conciliado por importe',
       obsText,
     ];
-    if (c.numConflict) {
-      reasons.push(`N° difiere (Sist: ${c.sys.numero} vs Comp: ${c.rec.nroComprobante})`);
-    }
     if (c.amountDiff > 0.005) reasons.push(`dif. $${c.amountDiff.toFixed(2)}`);
 
     items.push({
