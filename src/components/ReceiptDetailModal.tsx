@@ -6,13 +6,10 @@ import {
   RotateCcw,
   AlertTriangle,
   FileImage,
-  Tag,
-  Plus,
   Hand,
   ChevronLeft,
   ChevronRight,
   Unlink2,
-  Check,
   StickyNote,
   X,
   ArrowLeftRight,
@@ -20,7 +17,7 @@ import {
   Search,
   CheckCircle2,
 } from 'lucide-react';
-import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
+import type { AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
 
 const MAX_ZOOM = 5;
@@ -31,7 +28,8 @@ const STATUS_OPTIONS: Array<{
   label: string;
   activeClass: string;
 }> = [
-  { key: 'conciliado', label: '🟢 Conciliado', activeClass: 'bg-emerald-600 text-white border-emerald-600' },
+  { key: 'validado', label: '✅ Validado', activeClass: 'bg-emerald-700 text-white border-emerald-700' },
+  { key: 'conciliado', label: '🟢 Conciliado', activeClass: 'bg-teal-600 text-white border-teal-600' },
   { key: 'revisar', label: '🟡 Revisar', activeClass: 'bg-amber-500 text-white border-amber-500' },
   { key: 'sin_respaldo', label: '🔴 Sin respaldo', activeClass: 'bg-rose-600 text-white border-rose-600' },
   { key: 'no_registrado', label: '🔵 No registrado', activeClass: 'bg-sky-600 text-white border-sky-600' },
@@ -43,7 +41,6 @@ interface ReceiptDetailModalProps {
   minutaMonthsMap: Map<string, string[]>;
   flippedMinutas: Set<string>;
   linkCandidates: ReconciliationItem[];
-  categories: AuditCategory[];
   currentIndex: number;
   totalCount: number;
   hasPrev: boolean;
@@ -55,10 +52,7 @@ interface ReceiptDetailModalProps {
   onUnlink: (itemId: string) => void;
   onLinkItems: (currentItemId: string, targetItemId: string) => void;
   onToggleFlipMinuta: (minutaFile: string) => void;
-  onToggleManualValidated: (itemId: string) => void;
   onSaveNote: (itemId: string, note: string) => void;
-  onToggleCategory: (itemId: string, categoryId: string) => void;
-  onOpenCategoryManager: () => void;
 }
 
 export function ReceiptDetailModal({
@@ -67,7 +61,6 @@ export function ReceiptDetailModal({
   minutaMonthsMap,
   flippedMinutas,
   linkCandidates,
-  categories,
   currentIndex,
   totalCount,
   hasPrev,
@@ -79,10 +72,7 @@ export function ReceiptDetailModal({
   onUnlink,
   onLinkItems,
   onToggleFlipMinuta,
-  onToggleManualValidated,
   onSaveNote,
-  onToggleCategory,
-  onOpenCategoryManager,
 }: ReceiptDetailModalProps) {
   const [rotation, setRotation] = useState(0);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -93,8 +83,7 @@ export function ReceiptDetailModal({
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
 
-  // Compact toolbar popovers / sub-modals
-  const [catDropdownOpen, setCatDropdownOpen] = useState(false);
+  // Sub-modals
   const [obsModalOpen, setObsModalOpen] = useState(false);
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
@@ -134,7 +123,6 @@ export function ReceiptDetailModal({
     setPan({ x: 0, y: 0 });
     setIsDragging(false);
     setActiveReceiptIdx(0);
-    setCatDropdownOpen(false);
     setObsModalOpen(false);
     setLinkModalOpen(false);
     setLinkQuery('');
@@ -160,11 +148,7 @@ export function ReceiptDetailModal({
         return;
       }
       if (e.key === 'Escape') {
-        if (catDropdownOpen) {
-          setCatDropdownOpen(false);
-        } else {
-          onClose();
-        }
+        onClose();
         return;
       }
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
@@ -179,7 +163,7 @@ export function ReceiptDetailModal({
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [item, obsModalOpen, linkModalOpen, catDropdownOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
+  }, [item, obsModalOpen, linkModalOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
 
   if (!item) return null;
 
@@ -215,17 +199,7 @@ export function ReceiptDetailModal({
   }
 
   const sys = item.systemMovements[0] ?? null;
-  const assignedIds = new Set(item.categoryIds ?? []);
-  const assignedCats = categories.filter((c) => assignedIds.has(c.id));
-  const manualValCat = categories.find(
-    (c) =>
-      c.name
-        .trim()
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '') === 'validado manualmente'
-  );
-  const isManualValidated = manualValCat ? assignedIds.has(manualValCat.id) : false;
+  const isValidated = item.status === 'validado';
   const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
   const hasNote = item.auditorNote.trim().length > 0;
 
@@ -260,10 +234,7 @@ export function ReceiptDetailModal({
     >
       <div
         className="flex h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (catDropdownOpen) setCatDropdownOpen(false);
-        }}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Compact Header */}
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
@@ -299,20 +270,11 @@ export function ReceiptDetailModal({
             )}
             <button
               type="button"
-              onClick={() => onToggleManualValidated(item.id)}
-              title="Acceso directo: categoría 'Validado manualmente'"
-              style={
-                isManualValidated && manualValCat
-                  ? {
-                      backgroundColor: manualValCat.color,
-                      borderColor: manualValCat.color,
-                      color: '#ffffff',
-                    }
-                  : undefined
-              }
+              onClick={() => onChangeStatus(item.id, isValidated ? 'conciliado' : 'validado')}
+              title={isValidated ? 'Quitar validación (volver a Conciliado)' : 'Marcar como Validado por auditor'}
               className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
-                isManualValidated
-                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                isValidated
+                  ? 'border-emerald-700 bg-emerald-700 text-white shadow-xs'
                   : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
               }`}
             >
@@ -331,7 +293,7 @@ export function ReceiptDetailModal({
 
         {/* All-at-a-glance Body (no scrolling needed) */}
         <div className="flex min-h-0 flex-1 flex-col gap-2.5 p-3.5 text-xs">
-          {/* Compact Status + Reason + Unlink bar */}
+          {/* Compact Status + Reason + Link/Unlink bar */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
             <div className="flex flex-wrap items-center gap-1.5">
               {STATUS_OPTIONS.map((opt) => {
@@ -463,7 +425,7 @@ export function ReceiptDetailModal({
             </div>
           </div>
 
-          {/* Multiple receipts switcher (only when 2+ receipts matched) */}
+          {/* Multiple receipts switcher */}
           {item.receipts.length > 1 && (
             <div className="flex flex-wrap gap-1.5">
               {item.receipts.map((r, i) => (
@@ -483,10 +445,10 @@ export function ReceiptDetailModal({
             </div>
           )}
 
-          {/* Full-Height Scanned Image Viewer with Categories Dropdown + Observation Button */}
+          {/* Full-Height Scanned Image Viewer with Observation Button */}
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-1.5">
-              {/* Left: File name + optional duplicate flip icon + Categories dropdown + Observation button */}
+              {/* Left: File name + optional duplicate flip icon + Observation button */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-slate-700">
                   {activeImage
@@ -508,75 +470,6 @@ export function ReceiptDetailModal({
                   </button>
                 )}
 
-                {/* Categories Dropdown */}
-                <div className="relative" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    onClick={() => setCatDropdownOpen((v) => !v)}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
-                      assignedCats.length > 0
-                        ? 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
-                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    <Tag className="h-3.5 w-3.5" />
-                    {assignedCats.length === 0
-                      ? 'Categorías ▾'
-                      : assignedCats.length === 1
-                        ? `${assignedCats[0].name} ▾`
-                        : `Categorías (${assignedCats.length}) ▾`}
-                  </button>
-
-                  {catDropdownOpen && (
-                    <div className="absolute left-0 top-full z-40 mt-1 w-56 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl">
-                      {categories.length === 0 ? (
-                        <p className="px-2.5 py-1.5 text-[11px] text-slate-400">
-                          No hay categorías creadas.
-                        </p>
-                      ) : (
-                        categories.map((cat) => {
-                          const checked = assignedIds.has(cat.id);
-                          return (
-                            <button
-                              key={cat.id}
-                              type="button"
-                              onClick={() => {
-                                onToggleCategory(item.id, cat.id);
-                                setCatDropdownOpen(false);
-                              }}
-                              className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
-                            >
-                              <span className="flex items-center gap-2 truncate">
-                                <span
-                                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                                  style={{ backgroundColor: cat.color }}
-                                />
-                                <span className="truncate font-medium text-slate-800">
-                                  {cat.name}
-                                </span>
-                              </span>
-                              {checked && <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />}
-                            </button>
-                          );
-                        })
-                      )}
-                      <div className="my-1 border-t border-slate-100" />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCatDropdownOpen(false);
-                          onOpenCategoryManager();
-                        }}
-                        className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left font-medium text-indigo-600 hover:bg-indigo-50"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                        Administrar categorías…
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Observation Sub-Modal Button */}
                 <button
                   type="button"
                   onClick={() => {
@@ -658,7 +551,7 @@ export function ReceiptDetailModal({
               )}
             </div>
 
-            {/* Preview Canvas occupying all remaining vertical height */}
+            {/* Preview Canvas */}
             <div
               ref={previewViewportRef}
               onPointerDown={(e) => {
@@ -787,6 +680,7 @@ export function ReceiptDetailModal({
           </div>
         </div>
       )}
+
       {/* Manual Link Sub-Modal */}
       {linkModalOpen && (
         <div
@@ -808,7 +702,7 @@ export function ReceiptDetailModal({
                     : '🔗 Seleccionar movimiento "Sin respaldo" para vincular'}
                 </h3>
                 <p className="mt-0.5 text-[11px] text-slate-500">
-                  Ordenados por importe más parecido al actual ({formatARS(sys?.total ?? activeReceipt?.importe)}).
+                  Ordenados por coincidencia de N° e importe más parecido ({formatARS(sys?.total ?? activeReceipt?.importe)}).
                 </p>
               </div>
               <button

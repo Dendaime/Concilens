@@ -411,6 +411,7 @@ export function reconcileMovementsAndReceipts(
     sin_respaldo: 1,
     no_registrado: 2,
     conciliado: 3,
+    validado: 4,
   };
 
   items.sort((a, b) => order[a.status] - order[b.status]);

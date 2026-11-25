@@ -6,6 +6,7 @@ import {
   Download,
   AlertTriangle,
   CheckCircle2,
+  ShieldCheck,
   Clock,
   XCircle,
   HelpCircle,
@@ -19,15 +20,13 @@ import {
   Save,
   FolderOpen,
   Trash2,
-  Tag,
-  Plus,
   RefreshCw,
 } from 'lucide-react';
 import type {
-  AuditCategory,
   AuditStatus,
   ExtractedImage,
   ExtractedReceipt,
+  LegacyAuditCategory,
   ReconciliationItem,
   SystemMovement,
 } from './types';
@@ -49,10 +48,9 @@ import {
   type SavedSession,
 } from './lib/storage';
 import { ReceiptDetailModal } from './components/ReceiptDetailModal';
-import { CategoryManagerModal } from './components/CategoryManagerModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
-type ColumnKey = 'estado' | 'fecha' | 'numero' | 'proveedor' | 'importe' | 'minuta' | 'categorias';
+type ColumnKey = 'estado' | 'fecha' | 'numero' | 'proveedor' | 'importe' | 'minuta' | 'observacion';
 
 const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }> = [
   { key: 'estado', label: 'Estado' },
@@ -61,22 +59,21 @@ const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }
   { key: 'proveedor', label: 'Proveedor / Concepto' },
   { key: 'importe', label: 'Importe', alignRight: true },
   { key: 'minuta', label: 'Minuta' },
-  { key: 'categorias', label: 'Categorías / Obs.' },
-];
-
-const DEFAULT_CATEGORIES: AuditCategory[] = [
-  { id: 'cat-ok', name: 'Revisado OK', color: '#16a34a' },
-  { id: 'cat-obs', name: 'Observar monto', color: '#d97706' },
-  { id: 'cat-pend', name: 'Pendiente comprobante', color: '#dc2626' },
+  { key: 'observacion', label: 'Observación' },
 ];
 
 const STATUS_META: Record<
   AuditStatus,
   { label: string; badgeClass: string; icon: typeof CheckCircle2 }
 > = {
+  validado: {
+    label: 'Validado',
+    badgeClass: 'bg-emerald-600 text-white ring-1 ring-emerald-700',
+    icon: ShieldCheck,
+  },
   conciliado: {
     label: 'Conciliado',
-    badgeClass: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+    badgeClass: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
     icon: CheckCircle2,
   },
   revisar: {
@@ -96,6 +93,50 @@ const STATUS_META: Record<
   },
 };
 
+/**
+ * Lossless migration from legacy categoryIds to the unified 5-state workflow:
+ * - Category matching "valid*" or "revisado ok" -> status = 'validado'
+ * - Category matching "observ*" -> status = 'revisar'
+ */
+function migrateLegacyItems(
+  rawItems: ReconciliationItem[],
+  legacyCategories?: LegacyAuditCategory[]
+): ReconciliationItem[] {
+  const catNamesById = new Map<string, string>();
+  for (const c of legacyCategories ?? []) {
+    const norm = c.name
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    catNamesById.set(c.id, norm);
+  }
+
+  return rawItems.map((it) => {
+    const catIds = Array.isArray(it.categoryIds) ? it.categoryIds : [];
+    let nextStatus: AuditStatus = it.status;
+
+    if (catIds.length > 0) {
+      const names = catIds.map((id) => catNamesById.get(id) ?? id.toLowerCase());
+      const isValidated = names.some(
+        (n) => n.includes('valid') || n.includes('revisado ok') || n === 'cat-ok'
+      );
+      const isObserved = names.some((n) => n.includes('observ') || n === 'cat-obs');
+      if (isValidated) {
+        nextStatus = 'validado';
+      } else if (isObserved) {
+        nextStatus = 'revisar';
+      }
+    }
+
+    return {
+      ...it,
+      status: nextStatus,
+      categoryIds: [],
+    };
+  });
+}
+
 export default function App() {
   // Config & Chat JSON
   const [pastedJson, setPastedJson] = useState('');
@@ -112,12 +153,8 @@ export default function App() {
   const [extractedImages, setExtractedImages] = useState<ExtractedImage[]>([]);
   const [extractedReceipts, setExtractedReceipts] = useState<ExtractedReceipt[]>([]);
 
-  // Results & Hotelito-style audit categories
+  // Results
   const [items, setItems] = useState<ReconciliationItem[]>([]);
-  const [categories, setCategories] = useState<AuditCategory[]>(DEFAULT_CATEGORIES);
-  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL'); // 'ALL' | 'NONE' | cat.id
-  const [catPopoverOpen, setCatPopoverOpen] = useState(false);
-  const [catModalOpen, setCatModalOpen] = useState(false);
 
   // Detail modal, column filters & right-click / long-press context menu
   const [detailItemId, setDetailItemId] = useState<string | null>(null);
@@ -139,7 +176,7 @@ export default function App() {
     proveedor: '',
     importe: '',
     minuta: '',
-    categorias: '',
+    observacion: '',
   });
   const [colSelectedValues, setColSelectedValues] = useState<Record<ColumnKey, string[]>>({
     estado: [],
@@ -148,7 +185,7 @@ export default function App() {
     proveedor: [],
     importe: [],
     minuta: [],
-    categorias: [],
+    observacion: [],
   });
   const [openColFilter, setOpenColFilter] = useState<ColumnKey | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
@@ -168,14 +205,13 @@ export default function App() {
   useEffect(() => {
     const closeMenus = () => {
       setCtxMenu(null);
-      setCatPopoverOpen(false);
       setOpenColFilter(null);
     };
     window.addEventListener('click', closeMenus);
     return () => window.removeEventListener('click', closeMenus);
   }, []);
 
-  // Restore saved session from IndexedDB on mount
+  // Restore saved session from IndexedDB on mount (with automatic legacy category migration)
   useEffect(() => {
     let active = true;
     loadSessionFromDb()
@@ -190,15 +226,7 @@ export default function App() {
         setExtractedReceipts(saved.extractedReceipts);
         setPastedJson(saved.pastedJson);
         setDateToleranceDays(saved.dateToleranceDays);
-        setItems(
-          saved.items.map((it) => ({
-            ...it,
-            categoryIds: Array.isArray(it.categoryIds) ? it.categoryIds : [],
-          }))
-        );
-        if (Array.isArray(saved.categories) && saved.categories.length > 0) {
-          setCategories(saved.categories);
-        }
+        setItems(migrateLegacyItems(saved.items, saved.categories));
         setLastSavedAt(saved.savedAt);
         if (saved.items.length > 0) setSetupExpanded(false);
       })
@@ -224,7 +252,6 @@ export default function App() {
     pastedJson,
     dateToleranceDays,
     items,
-    categories,
   });
 
   // Auto-save to IndexedDB whenever work changes (debounced)
@@ -258,7 +285,6 @@ export default function App() {
     pastedJson,
     dateToleranceDays,
     items,
-    categories,
   ]);
 
   const minutaMonthsMap = useMemo(() => {
@@ -279,12 +305,6 @@ export default function App() {
     }
     return result;
   }, [items]);
-
-  const categoriesById = useMemo(() => {
-    const map = new Map<string, AuditCategory>();
-    for (const c of categories) map.set(c.id, c);
-    return map;
-  }, [categories]);
 
   const filteredMovements = useMemo(() => {
     if (selectedCajero === 'TODOS') return allMovements;
@@ -400,22 +420,21 @@ export default function App() {
   const handleSmartReconcile = () => {
     if (items.length === 0) return;
 
-    // Preserve any item that already has a category assigned (e.g. "Validado manualmente")
-    // or was manually linked by the auditor.
+    // Preserve any item already marked as "Validado" or manually linked by the auditor.
     const lockedItems = items.filter(
-      (it) => (it.categoryIds?.length ?? 0) > 0 || it.id.startsWith('linked-')
+      (it) => it.status === 'validado' || it.id.startsWith('linked-')
     );
     const unlockedItems = items.filter(
-      (it) => (it.categoryIds?.length ?? 0) === 0 && !it.id.startsWith('linked-')
+      (it) => it.status !== 'validado' && !it.id.startsWith('linked-')
     );
 
     if (unlockedItems.length === 0) {
-      window.alert('Todos los registros ya están categorizados o vinculados manualmente.');
+      window.alert('Todos los registros ya están validados o vinculados manualmente.');
       return;
     }
 
     const ok = window.confirm(
-      `Se conservarán intactos ${lockedItems.length} registros ya categorizados/vinculados y se volverán a conciliar los ${unlockedItems.length} restantes con las reglas nuevas (prioridad de N° y bloqueo de N° distintos).\n\n¿Continuar?`
+      `Se conservarán intactos ${lockedItems.length} registros ya validados/vinculados y se volverán a conciliar los ${unlockedItems.length} restantes con las reglas nuevas (prioridad de N° y bloqueo de N° distintos).\n\n¿Continuar?`
     );
     if (!ok) return;
 
@@ -426,7 +445,6 @@ export default function App() {
       for (const r of it.receipts) lockedRecIds.add(r.id);
     }
 
-    // Preserve any custom manual notes written on unlocked items
     const customNotesBySys = new Map<string, string>();
     const customNotesByRec = new Map<string, string>();
     for (const it of unlockedItems) {
@@ -436,12 +454,9 @@ export default function App() {
       for (const r of it.receipts) customNotesByRec.set(r.id, note);
     }
 
-    // Collect unlocked movements and receipts
     const remainingMovs = filteredMovements.filter((m) => !lockedSysIds.has(m.id));
     const recSource =
-      extractedReceipts.length > 0
-        ? extractedReceipts
-        : items.flatMap((it) => it.receipts);
+      extractedReceipts.length > 0 ? extractedReceipts : items.flatMap((it) => it.receipts);
     const seenRec = new Set<string>();
     const remainingRecs: ExtractedReceipt[] = [];
     for (const r of recSource) {
@@ -470,6 +485,7 @@ export default function App() {
       sin_respaldo: 1,
       no_registrado: 2,
       conciliado: 3,
+      validado: 4,
     };
     combined.sort((a, b) => order[a.status] - order[b.status]);
 
@@ -486,6 +502,7 @@ export default function App() {
     setErrorMsg(null);
     try {
       const saved = await readSessionBackupFile(file);
+      const migratedItems = migrateLegacyItems(saved.items, saved.categories);
       setSystemFileName(saved.systemFileName);
       setAllMovements(saved.allMovements);
       setCajeros(saved.cajeros);
@@ -495,17 +512,10 @@ export default function App() {
       setExtractedReceipts(saved.extractedReceipts);
       setPastedJson(saved.pastedJson);
       setDateToleranceDays(saved.dateToleranceDays);
-      setItems(
-        saved.items.map((it) => ({
-          ...it,
-          categoryIds: Array.isArray(it.categoryIds) ? it.categoryIds : [],
-        }))
-      );
-      if (Array.isArray(saved.categories) && saved.categories.length > 0) {
-        setCategories(saved.categories);
-      }
-      setSetupExpanded(saved.items.length === 0);
-      await saveSessionToDb(saved);
+      setItems(migratedItems);
+      setSetupExpanded(migratedItems.length === 0);
+      const updated: SavedSession = { ...saved, items: migratedItems, categories: undefined };
+      await saveSessionToDb(updated);
       setLastSavedAt(saved.savedAt);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Error al abrir el proyecto.');
@@ -552,7 +562,6 @@ export default function App() {
         receipts: [],
         hasDuplicateAlert: false,
         manualState: 'pendiente',
-        categoryIds: target.categoryIds ?? [],
         auditorNote: target.auditorNote,
       }));
       const unregistered: ReconciliationItem[] = target.receipts.map((rec) => ({
@@ -565,7 +574,6 @@ export default function App() {
         hasDuplicateAlert: rec.isDuplicateImage || rec.isDuplicateReceipt,
         duplicateDetails: rec.duplicateReason,
         manualState: 'pendiente',
-        categoryIds: [],
         auditorNote: '',
       }));
       const idx = prev.findIndex((it) => it.id === itemId);
@@ -586,24 +594,20 @@ export default function App() {
 
       const systemMovements = [...a.systemMovements, ...b.systemMovements];
       const receipts = [...a.receipts, ...b.receipts];
-      const mergedCategories = Array.from(
-        new Set([...(a.categoryIds ?? []), ...(b.categoryIds ?? [])])
-      );
       const mergedNote = [a.auditorNote.trim(), b.auditorNote.trim()]
         .filter(Boolean)
         .join(' | ');
 
       const merged: ReconciliationItem = {
         id: mergedId,
-        status: 'conciliado',
-        reason: 'Conciliado manualmente por auditoría',
+        status: 'validado',
+        reason: 'Vinculado y validado manualmente por auditoría',
         matchScore: 100,
         systemMovements,
         receipts,
         hasDuplicateAlert: a.hasDuplicateAlert || b.hasDuplicateAlert,
         duplicateDetails: a.duplicateDetails || b.duplicateDetails,
         manualState: 'aprobado',
-        categoryIds: mergedCategories,
         auditorNote: mergedNote,
       };
 
@@ -643,68 +647,11 @@ export default function App() {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
   };
 
-  const handleToggleCategory = (itemId: string, categoryId: string) => {
-    setItems((prev) =>
-      prev.map((it) => {
-        if (it.id !== itemId) return it;
-        const current = it.categoryIds ?? [];
-        const exists = current.includes(categoryId);
-        return {
-          ...it,
-          categoryIds: exists
-            ? current.filter((id) => id !== categoryId)
-            : [...current, categoryId],
-        };
-      })
-    );
-  };
-
-  const handleToggleManualValidated = (itemId: string) => {
-    const existing = categories.find(
-      (c) =>
-        c.name
-          .trim()
-          .toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '') === 'validado manualmente'
-    );
-    let catId = existing?.id;
-    if (!catId) {
-      catId = 'cat-validado-manual';
-      const newCat: AuditCategory = {
-        id: catId,
-        name: 'Validado manualmente',
-        color: '#16a34a',
-      };
-      setCategories((prev) => [...prev, newCat]);
-    }
-    handleToggleCategory(itemId, catId);
-  };
-
-  const handleCreateCategory = (name: string, color: string) => {
-    const newCat: AuditCategory = {
-      id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name,
-      color,
-    };
-    setCategories((prev) => [...prev, newCat]);
-  };
-
-  const handleDeleteCategory = (catId: string) => {
-    setCategories((prev) => prev.filter((c) => c.id !== catId));
-    setItems((prev) =>
-      prev.map((it) => ({
-        ...it,
-        categoryIds: (it.categoryIds ?? []).filter((id) => id !== catId),
-      }))
-    );
-    if (selectedCategoryFilter === catId) setSelectedCategoryFilter('ALL');
-  };
-
   const counts = useMemo(() => {
     const c = {
       todos: items.length,
       excepciones: 0,
+      validado: 0,
       conciliado: 0,
       revisar: 0,
       sin_respaldo: 0,
@@ -713,7 +660,7 @@ export default function App() {
     };
     for (const it of items) {
       c[it.status]++;
-      if (it.status !== 'conciliado') c.excepciones++;
+      if (it.status !== 'conciliado' && it.status !== 'validado') c.excepciones++;
       if (it.hasDuplicateAlert) c.duplicados++;
     }
     return c;
@@ -737,14 +684,8 @@ export default function App() {
         return [formatARS(amount)];
       case 'minuta':
         return [rec ? rec.minutaFile : '(Sin minuta)'];
-      case 'categorias': {
-        const vals: string[] = (it.categoryIds ?? [])
-          .map((id) => categoriesById.get(id)?.name)
-          .filter((n): n is string => Boolean(n));
-        if (it.auditorNote.trim()) vals.push('Con observación (📝)');
-        if (vals.length === 0) vals.push('(Sin categoría ni obs.)');
-        return vals;
-      }
+      case 'observacion':
+        return it.auditorNote.trim() ? ['Con observación (📝)'] : ['(Sin observación)'];
     }
   };
 
@@ -763,7 +704,7 @@ export default function App() {
     }
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, categoriesById]);
+  }, [items]);
 
   const activeColFiltersCount = useMemo(
     () =>
@@ -781,7 +722,7 @@ export default function App() {
       proveedor: '',
       importe: '',
       minuta: '',
-      categorias: '',
+      observacion: '',
     });
     setColSelectedValues({
       estado: [],
@@ -790,7 +731,7 @@ export default function App() {
       proveedor: [],
       importe: [],
       minuta: [],
-      categorias: [],
+      observacion: [],
     });
   };
 
@@ -805,24 +746,15 @@ export default function App() {
   const visibleItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return items.filter((it) => {
-      if (activeTab === 'excepciones' && it.status === 'conciliado') return false;
+      if (activeTab === 'excepciones' && (it.status === 'conciliado' || it.status === 'validado')) {
+        return false;
+      }
       if (activeTab === 'duplicados' && !it.hasDuplicateAlert) return false;
       if (
         activeTab !== 'todos' &&
         activeTab !== 'excepciones' &&
         activeTab !== 'duplicados' &&
         it.status !== activeTab
-      ) {
-        return false;
-      }
-
-      // Category bar filter
-      const itemCats = it.categoryIds ?? [];
-      if (selectedCategoryFilter === 'NONE' && itemCats.length > 0) return false;
-      if (
-        selectedCategoryFilter !== 'ALL' &&
-        selectedCategoryFilter !== 'NONE' &&
-        !itemCats.includes(selectedCategoryFilter)
       ) {
         return false;
       }
@@ -837,7 +769,7 @@ export default function App() {
         const txtFilter = colFilters[col.key].trim().toLowerCase();
         if (txtFilter && selected.length === 0) {
           const extra =
-            col.key === 'categorias'
+            col.key === 'observacion'
               ? ` ${it.auditorNote}`
               : col.key === 'proveedor'
                 ? ` ${it.reason}`
@@ -848,11 +780,10 @@ export default function App() {
       }
 
       if (!q) return true;
-      const catNames = itemCats.map((id) => categoriesById.get(id)?.name ?? '').join(' ');
       const haystack = [
+        STATUS_META[it.status].label,
         it.reason,
         it.auditorNote,
-        catNames,
         ...it.systemMovements.map(
           (m) => `${m.numero} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
         ),
@@ -866,7 +797,7 @@ export default function App() {
       return haystack.includes(q);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, activeTab, selectedCategoryFilter, colFilters, colSelectedValues, searchQuery, categoriesById]);
+  }, [items, activeTab, colFilters, colSelectedValues, searchQuery]);
 
   const detailItem = useMemo(
     () => items.find((it) => it.id === detailItemId) ?? null,
@@ -957,7 +888,7 @@ export default function App() {
               type="button"
               disabled={items.length === 0}
               onClick={handleSmartReconcile}
-              title="Re-conciliar registros pendientes con las reglas actuales conservando tus categorías y vinculaciones manuales"
+              title="Re-conciliar registros pendientes con las reglas actuales conservando tus validados y vinculaciones manuales"
               className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -976,7 +907,7 @@ export default function App() {
             <button
               type="button"
               disabled={items.length === 0}
-              onClick={() => exportAuditToExcel(items, categories)}
+              onClick={() => exportAuditToExcel(items)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className="h-3.5 w-3.5" />
@@ -1204,10 +1135,11 @@ export default function App() {
 
         {/* KPI Summary Strip */}
         {items.length > 0 && (
-          <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <section className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
             {[
               { label: 'Total ítems', value: counts.todos, accent: 'text-slate-900' },
-              { label: '🟢 Conciliados', value: counts.conciliado, accent: 'text-emerald-700' },
+              { label: '✅ Validados', value: counts.validado, accent: 'text-emerald-700' },
+              { label: '🟢 Conciliados', value: counts.conciliado, accent: 'text-teal-700' },
               { label: '🟡 A revisar', value: counts.revisar, accent: 'text-amber-700' },
               { label: '🔴 Sin respaldo', value: counts.sin_respaldo, accent: 'text-rose-700' },
               { label: '🔵 No registrados', value: counts.no_registrado, accent: 'text-sky-700' },
@@ -1224,16 +1156,17 @@ export default function App() {
           </section>
         )}
 
-        {/* Full-Width Hotelito-Style Audit Table */}
+        {/* Full-Width Audit Table */}
         {items.length > 0 && (
           <section className="flex flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            {/* Top Toolbar: Status Tabs + Hotelito Category Filter Bar + Search */}
+            {/* Top Toolbar: Status Tabs + Search */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
               <div className="flex flex-wrap items-center gap-1.5">
                 {(
                   [
                     { key: 'excepciones', label: `Excepciones (${counts.excepciones})` },
                     { key: 'todos', label: `Todos (${counts.todos})` },
+                    { key: 'validado', label: `Validados (${counts.validado})` },
                     { key: 'conciliado', label: `Conciliados (${counts.conciliado})` },
                     { key: 'revisar', label: `Revisar (${counts.revisar})` },
                     { key: 'sin_respaldo', label: `Sin respaldo (${counts.sin_respaldo})` },
@@ -1255,125 +1188,38 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Hotelito-style Category Filter Bar */}
-                <div className="relative flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCategoryFilter('ALL')}
-                    className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
-                      selectedCategoryFilter === 'ALL'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
-                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Todas
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCatPopoverOpen((v) => !v)}
-                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
-                      selectedCategoryFilter !== 'ALL'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
-                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Tag className="h-3 w-3" />
-                    {selectedCategoryFilter === 'ALL'
-                      ? 'Categorías ▾'
-                      : selectedCategoryFilter === 'NONE'
-                        ? 'Sin categoría ▾'
-                        : `${categoriesById.get(selectedCategoryFilter)?.name ?? 'Categoría'} ▾`}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCatModalOpen(true)}
-                    title="Crear o administrar categorías de auditoría"
-                    className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </button>
-
-                  {catPopoverOpen && (
-                    <div className="absolute right-0 top-9 z-30 w-56 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-lg">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedCategoryFilter('ALL');
-                          setCatPopoverOpen(false);
-                        }}
-                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
-                      >
-                        <span>Todas las categorías</span>
-                        {selectedCategoryFilter === 'ALL' && <Check className="h-3.5 w-3.5 text-indigo-600" />}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedCategoryFilter('NONE');
-                          setCatPopoverOpen(false);
-                        }}
-                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-slate-600 hover:bg-slate-100"
-                      >
-                        <span>Sin categoría</span>
-                        {selectedCategoryFilter === 'NONE' && <Check className="h-3.5 w-3.5 text-indigo-600" />}
-                      </button>
-                      {categories.length > 0 && <div className="my-1 border-t border-slate-100" />}
-                      {categories.map((cat) => (
-                        <button
-                          key={cat.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedCategoryFilter(cat.id);
-                            setCatPopoverOpen(false);
-                          }}
-                          className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
-                        >
-                          <span className="flex items-center gap-2 truncate">
-                            <span
-                              className="h-2.5 w-2.5 shrink-0 rounded-full"
-                              style={{ backgroundColor: cat.color }}
-                            />
-                            <span className="truncate">{cat.name}</span>
-                          </span>
-                          {selectedCategoryFilter === cat.id && (
-                            <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Search */}
-                <div className="relative w-full sm:w-64">
-                  <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Buscar proveedor, N°, categoría u obs…"
-                    className="w-full rounded-lg border border-slate-200 py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
-                  />
-                </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar proveedor, N°, estado u obs…"
+                  className="w-full rounded-lg border border-slate-200 py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                />
               </div>
             </div>
 
-            {/* Hotelito-style Meta Hint */}
+            {/* Meta Hint */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-1.5 text-[11px] text-slate-500">
               <div className="flex items-center gap-2">
-                <span>Mostrando {visibleItems.length} de {items.length} registros</span>
+                <span>
+                  Mostrando {visibleItems.length} de {items.length} registros
+                </span>
                 {activeColFiltersCount > 0 && (
                   <button
                     type="button"
                     onClick={clearColFilters}
                     className="rounded-md bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-200"
                   >
-                    Limpiar {activeColFiltersCount} {activeColFiltersCount === 1 ? 'filtro' : 'filtros'} ×
+                    Limpiar {activeColFiltersCount}{' '}
+                    {activeColFiltersCount === 1 ? 'filtro' : 'filtros'} ×
                   </button>
                 )}
               </div>
-              <span>Clic simple: ventana de comprobante y observación · Clic sostenido (o derecho): categorizar</span>
+              <span>
+                Clic simple: ventana de comprobante · Clic sostenido (o derecho): cambiar estado
+              </span>
             </div>
 
             {/* Table */}
@@ -1420,7 +1266,7 @@ export default function App() {
                             <div
                               onClick={(e) => e.stopPropagation()}
                               className={`absolute top-full z-30 mt-1 w-60 rounded-xl border border-slate-200 bg-white p-2 text-left font-normal normal-case tracking-normal shadow-xl ${
-                                col.key === 'categorias' || col.alignRight ? 'right-2' : 'left-2'
+                                col.key === 'observacion' || col.alignRight ? 'right-2' : 'left-2'
                               }`}
                             >
                               <input
@@ -1440,7 +1286,6 @@ export default function App() {
                                 className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
                               />
 
-                              {/* Checklist of unique values in this column */}
                               <div className="mt-2 max-h-48 space-y-0.5 overflow-y-auto pr-0.5">
                                 {options.length === 0 ? (
                                   <p className="px-2 py-2 text-center text-[11px] text-slate-400">
@@ -1509,9 +1354,6 @@ export default function App() {
                     const amount =
                       sys?.total ??
                       it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
-                    const itemCats = (it.categoryIds ?? [])
-                      .map((id) => categoriesById.get(id))
-                      .filter((c): c is AuditCategory => Boolean(c));
 
                     const cancelLongPress = () => {
                       if (longPressTimerRef.current !== null) {
@@ -1520,19 +1362,17 @@ export default function App() {
                       }
                     };
 
-                    const primaryCatColor = itemCats[0]?.color;
+                    const rowTint =
+                      it.status === 'validado'
+                        ? { backgroundColor: '#16a34a18', boxShadow: 'inset 3px 0 0 #16a34a' }
+                        : it.status === 'revisar'
+                          ? { backgroundColor: '#d9770614', boxShadow: 'inset 3px 0 0 #d97706' }
+                          : undefined;
 
                     return (
                       <tr
                         key={it.id}
-                        style={
-                          primaryCatColor
-                            ? {
-                                backgroundColor: `${primaryCatColor}1a`,
-                                boxShadow: `inset 3px 0 0 ${primaryCatColor}`,
-                              }
-                            : undefined
-                        }
+                        style={rowTint}
                         onPointerDown={(e) => {
                           if (e.button !== 0) return;
                           longPressTriggeredRef.current = false;
@@ -1596,34 +1436,15 @@ export default function App() {
                         <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
                           {rec ? rec.minutaFile : '—'}
                         </td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex flex-wrap items-center gap-1">
-                            {itemCats.map((cat) => (
-                              <span
-                                key={cat.id}
-                                style={{
-                                  backgroundColor: `${cat.color}18`,
-                                  color: cat.color,
-                                  borderColor: `${cat.color}44`,
-                                }}
-                                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
-                              >
-                                <span
-                                  className="h-1.5 w-1.5 rounded-full"
-                                  style={{ backgroundColor: cat.color }}
-                                />
-                                {cat.name}
-                              </span>
-                            ))}
-                            {it.auditorNote.trim() && (
-                              <span
-                                title={it.auditorNote}
-                                className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600"
-                              >
-                                📝 Obs.
-                              </span>
-                            )}
-                          </div>
+                        <td className="max-w-[200px] px-3 py-2.5">
+                          {it.auditorNote.trim() && (
+                            <span
+                              title={it.auditorNote}
+                              className="inline-flex max-w-full items-center gap-1 truncate rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-900 ring-1 ring-amber-200"
+                            >
+                              📝 <span className="truncate">{it.auditorNote}</span>
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -1642,90 +1463,50 @@ export default function App() {
         )}
       </main>
 
-      {/* Right-click / Long-press Floating Context Menu (Hotelito style) */}
+      {/* Right-click / Long-press Floating Status Menu */}
       {ctxMenu && ctxItem && (
         <div
           style={{
             position: 'fixed',
-            top: Math.min(ctxMenu.y, window.innerHeight - 330),
-            left: Math.min(ctxMenu.x, window.innerWidth - 240),
+            top: Math.min(ctxMenu.y, window.innerHeight - 230),
+            left: Math.min(ctxMenu.x, window.innerWidth - 220),
           }}
           onClick={(e) => e.stopPropagation()}
-          className="z-50 w-60 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl"
+          className="z-50 w-52 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl"
         >
           <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
             Cambiar estado
           </p>
-          <div className="grid grid-cols-2 gap-1 px-1.5 pb-1.5">
-            {(
-              [
-                { key: 'conciliado', label: '🟢 Conciliado' },
-                { key: 'revisar', label: '🟡 Revisar' },
-                { key: 'sin_respaldo', label: '🔴 Sin respaldo' },
-                { key: 'no_registrado', label: '🔵 No reg.' },
-              ] as const
-            ).map((st) => (
-              <button
-                key={st.key}
-                type="button"
-                onClick={() => {
-                  handleChangeStatus(ctxItem.id, st.key);
-                  setCtxMenu(null);
-                }}
-                className={`rounded-lg border px-2 py-1 text-left text-[11px] font-medium transition ${
-                  ctxItem.status === st.key
-                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
-                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
-                }`}
-              >
-                {st.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="my-1 border-t border-slate-100" />
-          <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-            Categorizar registro
-          </p>
-          {categories.map((cat) => {
-            const checked = (ctxItem.categoryIds ?? []).includes(cat.id);
-            return (
-              <button
-                key={cat.id}
-                type="button"
-                onClick={() => {
-                  handleToggleCategory(ctxItem.id, cat.id);
-                  setCtxMenu(null);
-                }}
-                className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
-              >
-                <span className="flex items-center gap-2 truncate">
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: cat.color }}
-                  />
-                  <span className="truncate font-medium text-slate-800">{cat.name}</span>
-                </span>
-                {checked && <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />}
-              </button>
-            );
-          })}
-          <div className="my-1 border-t border-slate-100" />
-          <button
-            type="button"
-            onClick={() => {
-              setCtxMenu(null);
-              setCatModalOpen(true);
-            }}
-            className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left font-medium text-indigo-600 hover:bg-indigo-50"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Administrar categorías…
-          </button>
+          {(
+            [
+              { key: 'validado', label: '✅ Validado' },
+              { key: 'conciliado', label: '🟢 Conciliado' },
+              { key: 'revisar', label: '🟡 Revisar' },
+              { key: 'sin_respaldo', label: '🔴 Sin respaldo' },
+              { key: 'no_registrado', label: '🔵 No registrado' },
+            ] as const
+          ).map((st) => (
+            <button
+              key={st.key}
+              type="button"
+              onClick={() => {
+                handleChangeStatus(ctxItem.id, st.key);
+                setCtxMenu(null);
+              }}
+              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left font-medium transition ${
+                ctxItem.status === st.key
+                  ? 'bg-indigo-50 text-indigo-700'
+                  : 'text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              <span>{st.label}</span>
+              {ctxItem.status === st.key && <Check className="h-3.5 w-3.5 text-indigo-600" />}
+            </button>
+          ))}
         </div>
       )}
 
-      {/* Hotelito-style Receipt Detail Modal */}
+      {/* Receipt Detail Modal */}
       {(() => {
         const navList = modalNavIds.length > 0 ? modalNavIds : visibleItems.map((v) => v.id);
         const idx = detailItemId ? navList.indexOf(detailItemId) : -1;
@@ -1743,7 +1524,6 @@ export default function App() {
             minutaMonthsMap={minutaMonthsMap}
             flippedMinutas={flippedMinutas}
             linkCandidates={linkCandidates}
-            categories={categories}
             currentIndex={idx}
             totalCount={navList.length}
             hasPrev={idx > 0}
@@ -1764,22 +1544,10 @@ export default function App() {
             onUnlink={handleUnlinkItem}
             onLinkItems={handleLinkItems}
             onToggleFlipMinuta={handleToggleFlipMinuta}
-            onToggleManualValidated={handleToggleManualValidated}
             onSaveNote={handleSaveNote}
-            onToggleCategory={handleToggleCategory}
-            onOpenCategoryManager={() => setCatModalOpen(true)}
           />
         );
       })()}
-
-      {/* Hotelito-style Category Manager Modal */}
-      <CategoryManagerModal
-        isOpen={catModalOpen}
-        categories={categories}
-        onClose={() => setCatModalOpen(false)}
-        onCreateCategory={handleCreateCategory}
-        onDeleteCategory={handleDeleteCategory}
-      />
     </div>
   );
 }

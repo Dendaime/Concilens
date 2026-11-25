@@ -1,7 +1,8 @@
 import * as XLSX from 'xlsx';
-import type { AuditCategory, ReconciliationItem } from '../types';
+import type { ReconciliationItem } from '../types';
 
 const STATUS_LABELS: Record<ReconciliationItem['status'], string> = {
+  validado: 'Validado',
   conciliado: 'Conciliado',
   revisar: 'Revisar',
   sin_respaldo: 'Sin respaldo',
@@ -10,24 +11,16 @@ const STATUS_LABELS: Record<ReconciliationItem['status'], string> = {
 
 export function exportAuditToExcel(
   items: ReconciliationItem[],
-  categories: AuditCategory[] = [],
   filename = 'concilens-auditoria.xlsx'
 ) {
-  const catMap = new Map(categories.map((c) => [c.id, c.name]));
-
   const rows = items.map((item) => {
     const sys = item.systemMovements[0];
     const rec = item.receipts[0];
     const totalSys = item.systemMovements.reduce((s, m) => s + m.total, 0);
     const totalRec = item.receipts.reduce((s, r) => s + (r.importe ?? 0), 0);
-    const catNames = (item.categoryIds ?? [])
-      .map((id) => catMap.get(id))
-      .filter(Boolean)
-      .join(', ');
 
     return {
       Estado: STATUS_LABELS[item.status],
-      Categorias: catNames,
       Observacion_Auditoria: item.auditorNote,
       Motivo: item.reason,
       Alerta_Duplicado: item.hasDuplicateAlert ? item.duplicateDetails || 'SI' : '',

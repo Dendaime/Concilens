@@ -52,6 +52,7 @@ export interface ExtractedReceipt {
 }
 
 export type AuditStatus =
+  | 'validado'
   | 'conciliado'
   | 'revisar'
   | 'sin_respaldo'
@@ -59,7 +60,7 @@ export type AuditStatus =
 
 export type ManualReviewState = 'pendiente' | 'aprobado' | 'observado' | 'rechazado';
 
-export interface AuditCategory {
+export interface LegacyAuditCategory {
   id: string;
   name: string;
   color: string;
@@ -76,7 +77,7 @@ export interface ReconciliationItem {
   duplicateDetails?: string;
   manualState: ManualReviewState;
   auditorNote: string;
-  categoryIds: string[];
+  categoryIds?: string[];
 }
 
 export interface GeminiConfig {

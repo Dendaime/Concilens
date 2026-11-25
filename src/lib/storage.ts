@@ -1,7 +1,7 @@
 import type {
-  AuditCategory,
   ExtractedImage,
   ExtractedReceipt,
+  LegacyAuditCategory,
   ReconciliationItem,
   SystemMovement,
 } from '../types';
@@ -19,7 +19,7 @@ export interface SavedSession {
   pastedJson: string;
   dateToleranceDays: number;
   items: ReconciliationItem[];
-  categories?: AuditCategory[];
+  categories?: LegacyAuditCategory[];
 }
 
 const DB_NAME = 'concilens_db';
