@@ -17,9 +17,10 @@ import {
   Search,
   CheckCircle2,
   ClipboardEdit,
+  Check,
 } from 'lucide-react';
 import type { AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
-import { formatARS } from '../lib/dateUtils';
+import { diffDaysIso, formatARS } from '../lib/dateUtils';
 
 const MAX_ZOOM = 5;
 const DEFAULT_ZOOM = MAX_ZOOM / 2; // 2.5x — half of max zoom by default
@@ -381,9 +382,106 @@ export function ReceiptDetailModal({
                   );
                 });
               })()}
-              <span className="ml-1 hidden truncate text-[11px] text-slate-500 xl:inline">
-                · {item.reason}
-              </span>
+              {sys && activeReceipt ? (
+                (() => {
+                  const totalRec = item.receipts.reduce((s, r) => s + (r.importe ?? 0), 0);
+                  const amtDiff = Math.abs(sys.total - totalRec);
+                  const amtState: 'ok' | 'warn' | 'bad' =
+                    amtDiff < 0.005 ? 'ok' : amtDiff <= 0.05 ? 'warn' : 'bad';
+
+                  const dDiff = diffDaysIso(sys.fechaIso, activeReceipt.fechaIso);
+                  const dateState: 'ok' | 'warn' | 'bad' =
+                    dDiff === 0 ? 'ok' : dDiff !== null && dDiff <= 2 ? 'warn' : 'bad';
+
+                  const aNum = sys.numero.replace(/\D/g, '').replace(/^0+/, '');
+                  const bNum = activeReceipt.nroComprobante.replace(/\D/g, '').replace(/^0+/, '');
+                  const numMatches =
+                    aNum.length >= 3 &&
+                    bNum.length >= 3 &&
+                    (aNum === bNum || aNum.endsWith(bNum) || bNum.endsWith(aNum));
+                  const numState: 'ok' | 'warn' | 'bad' = numMatches
+                    ? 'ok'
+                    : aNum.length >= 4 && bNum.length >= 4
+                      ? 'bad'
+                      : 'warn';
+
+                  const sysTxt = `${sys.razonSocial} ${sys.descripcion} ${sys.balance}`
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '');
+                  const recTokens = activeReceipt.proveedorOConcepto
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .split(/[^a-z0-9]+/)
+                    .filter((t) => t.length >= 3);
+                  const provHits = recTokens.filter((t) => sysTxt.includes(t)).length;
+                  const provState: 'ok' | 'bad' = provHits > 0 ? 'ok' : 'bad';
+
+                  const pills: Array<{
+                    label: string;
+                    state: 'ok' | 'warn' | 'bad';
+                    title: string;
+                  }> = [
+                    {
+                      label: amtDiff >= 0.005 ? `Importe (dif. $${amtDiff.toFixed(2)})` : 'Importe',
+                      state: amtState,
+                      title: `Sistema: ${formatARS(sys.total)} vs Comprobante: ${formatARS(totalRec)}`,
+                    },
+                    {
+                      label:
+                        dDiff === 0
+                          ? 'Fecha'
+                          : dDiff !== null
+                            ? `Fecha (${dDiff}d)`
+                            : 'Fecha',
+                      state: dateState,
+                      title: `Sistema: ${sys.fecha} vs Comprobante: ${activeReceipt.fecha || '—'}`,
+                    },
+                    {
+                      label: 'N° Comp.',
+                      state: numState,
+                      title: `Sistema: ${sys.numero || '—'} vs Comprobante: ${activeReceipt.nroComprobante || '—'}`,
+                    },
+                    {
+                      label: 'Proveedor',
+                      state: provState,
+                      title: `Sistema: ${sys.descripcion || sys.razonSocial} vs Comprobante: ${activeReceipt.proveedorOConcepto}`,
+                    },
+                  ];
+
+                  return (
+                    <div className="ml-1 flex flex-wrap items-center gap-1 border-l border-slate-200 pl-2">
+                      {pills.map((p) => (
+                        <span
+                          key={p.label}
+                          title={p.title}
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${
+                            p.state === 'ok'
+                              ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                              : p.state === 'warn'
+                                ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                                : 'bg-rose-50 text-rose-700 ring-rose-200'
+                          }`}
+                        >
+                          {p.state === 'ok' ? (
+                            <Check className="h-3 w-3 stroke-[2.5]" />
+                          ) : p.state === 'bad' ? (
+                            <X className="h-3 w-3 stroke-[2.5]" />
+                          ) : (
+                            <span className="font-bold leading-none">~</span>
+                          )}
+                          {p.label}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()
+              ) : (
+                <span className="ml-1 hidden truncate text-[11px] text-slate-500 xl:inline">
+                  · {item.reason}
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-1.5">
