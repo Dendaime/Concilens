@@ -54,6 +54,7 @@ type ColumnKey =
   | 'estado'
   | 'situacion'
   | 'fecha'
+  | 'caja'
   | 'numero'
   | 'proveedor'
   | 'importe'
@@ -65,6 +66,7 @@ const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }
   { key: 'estado', label: 'Estado' },
   { key: 'situacion', label: 'Situación' },
   { key: 'fecha', label: 'Fecha' },
+  { key: 'caja', label: 'N° Caja' },
   { key: 'numero', label: 'N° Comp.' },
   { key: 'proveedor', label: 'Proveedor / Concepto' },
   { key: 'importe', label: 'Importe', alignRight: true },
@@ -186,6 +188,7 @@ export default function App() {
     estado: '',
     situacion: '',
     fecha: '',
+    caja: '',
     numero: '',
     proveedor: '',
     importe: '',
@@ -197,6 +200,7 @@ export default function App() {
     estado: [],
     situacion: [],
     fecha: [],
+    caja: [],
     numero: [],
     proveedor: [],
     importe: [],
@@ -834,6 +838,8 @@ export default function App() {
       }
       case 'fecha':
         return [sys?.fecha ?? rec?.fecha ?? '(Sin fecha)'];
+      case 'caja':
+        return [sys?.caja || '(Sin caja)'];
       case 'numero':
         return [sys?.numero || rec?.nroComprobante || '(Sin número)'];
       case 'proveedor':
@@ -879,6 +885,7 @@ export default function App() {
       estado: '',
       situacion: '',
       fecha: '',
+      caja: '',
       numero: '',
       proveedor: '',
       importe: '',
@@ -890,6 +897,7 @@ export default function App() {
       estado: [],
       situacion: [],
       fecha: [],
+      caja: [],
       numero: [],
       proveedor: [],
       importe: [],
@@ -956,7 +964,7 @@ export default function App() {
         it.auditorNote,
         it.auditField ?? '',
         ...it.systemMovements.map(
-          (m) => `${m.numero} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
+          (m) => `${m.numero} ${m.caja} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
         ),
         ...it.receipts.map(
           (r) =>
@@ -1678,6 +1686,9 @@ export default function App() {
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-slate-600 tabular-nums">
                           {sys?.fecha ?? rec?.fecha ?? '—'}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-slate-600 tabular-nums">
+                          {sys?.caja || '—'}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-slate-600">
                           {sys?.numero || rec?.nroComprobante || '—'}
