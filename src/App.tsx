@@ -695,8 +695,14 @@ export default function App() {
       duplicados: 0,
     };
     for (const it of items) {
-      c[it.status]++;
-      if (it.status !== 'conciliado' && it.status !== 'validado') c.excepciones++;
+      const isLinked = it.systemMovements.length > 0 && it.receipts.length > 0;
+      if (isLinked) c.conciliado++;
+      else if (it.systemMovements.length > 0) c.sin_respaldo++;
+      else if (it.receipts.length > 0) c.no_registrado++;
+
+      if (it.status === 'validado') c.validado++;
+      if (it.status === 'revisar') c.revisar++;
+      if (it.status === 'revisar' || !isLinked) c.excepciones++;
       if (it.hasDuplicateAlert) c.duplicados++;
     }
     return c;
@@ -708,8 +714,19 @@ export default function App() {
     const amount = sys?.total ?? it.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
 
     switch (col) {
-      case 'estado':
-        return [STATUS_META[it.status].label];
+      case 'estado': {
+        const isLinked = it.systemMovements.length > 0 && it.receipts.length > 0;
+        const base: AuditStatus = isLinked
+          ? 'conciliado'
+          : it.systemMovements.length > 0
+            ? 'sin_respaldo'
+            : 'no_registrado';
+        const vals = [STATUS_META[base].label];
+        if (it.status === 'validado' || it.status === 'revisar') {
+          vals.push(STATUS_META[it.status].label);
+        }
+        return vals;
+      }
       case 'fecha':
         return [sys?.fecha ?? rec?.fecha ?? '(Sin fecha)'];
       case 'numero':
@@ -786,18 +803,22 @@ export default function App() {
   const visibleItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return items.filter((it) => {
-      if (activeTab === 'excepciones' && (it.status === 'conciliado' || it.status === 'validado')) {
+      const isLinked = it.systemMovements.length > 0 && it.receipts.length > 0;
+      const base: AuditStatus = isLinked
+        ? 'conciliado'
+        : it.systemMovements.length > 0
+          ? 'sin_respaldo'
+          : 'no_registrado';
+
+      if (activeTab === 'excepciones' && isLinked && it.status !== 'revisar') {
         return false;
       }
       if (activeTab === 'duplicados' && !it.hasDuplicateAlert) return false;
-      if (
-        activeTab !== 'todos' &&
-        activeTab !== 'excepciones' &&
-        activeTab !== 'duplicados' &&
-        it.status !== activeTab
-      ) {
-        return false;
-      }
+      if (activeTab === 'conciliado' && !isLinked) return false;
+      if (activeTab === 'sin_respaldo' && base !== 'sin_respaldo') return false;
+      if (activeTab === 'no_registrado' && base !== 'no_registrado') return false;
+      if (activeTab === 'validado' && it.status !== 'validado') return false;
+      if (activeTab === 'revisar' && it.status !== 'revisar') return false;
 
       // Per-column checkbox & text filters
       for (const col of COLUMN_DEFS) {
@@ -1392,8 +1413,6 @@ export default function App() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibleItems.map((it) => {
-                    const meta = STATUS_META[it.status];
-                    const Icon = meta.icon;
                     const sys = it.systemMovements[0];
                     const rec = it.receipts[0];
                     const amount =
@@ -1450,12 +1469,40 @@ export default function App() {
                       >
                         <td className="whitespace-nowrap px-3 py-2.5">
                           <div className="flex items-center gap-1">
-                            <span
-                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.badgeClass}`}
-                            >
-                              <Icon className="h-3 w-3" />
-                              {meta.label}
-                            </span>
+                            {(() => {
+                              const isLinked =
+                                it.systemMovements.length > 0 && it.receipts.length > 0;
+                              const base: AuditStatus = isLinked
+                                ? 'conciliado'
+                                : it.systemMovements.length > 0
+                                  ? 'sin_respaldo'
+                                  : 'no_registrado';
+                              const baseMeta = STATUS_META[base];
+                              const BaseIcon = baseMeta.icon;
+                              const showOverlay =
+                                it.status === 'validado' || it.status === 'revisar';
+                              const overlayMeta = showOverlay ? STATUS_META[it.status] : null;
+                              const OverlayIcon = overlayMeta?.icon;
+
+                              return (
+                                <>
+                                  <span
+                                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${baseMeta.badgeClass}`}
+                                  >
+                                    <BaseIcon className="h-3 w-3" />
+                                    {baseMeta.label}
+                                  </span>
+                                  {overlayMeta && OverlayIcon && (
+                                    <span
+                                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${overlayMeta.badgeClass}`}
+                                    >
+                                      <OverlayIcon className="h-3 w-3" />
+                                      {overlayMeta.label}
+                                    </span>
+                                  )}
+                                </>
+                              );
+                            })()}
                             {it.hasDuplicateAlert && (
                               <span title={it.duplicateDetails || 'Posible duplicado'}>
                                 <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />

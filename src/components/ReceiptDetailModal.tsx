@@ -29,8 +29,8 @@ const STATUS_OPTIONS: Array<{
   label: string;
   activeClass: string;
 }> = [
-  { key: 'validado', label: '✅ Validado', activeClass: 'bg-emerald-700 text-white border-emerald-700' },
   { key: 'conciliado', label: '🟢 Conciliado', activeClass: 'bg-teal-600 text-white border-teal-600' },
+  { key: 'validado', label: '✅ Validado', activeClass: 'bg-emerald-700 text-white border-emerald-700' },
   { key: 'revisar', label: '🟡 Revisar', activeClass: 'bg-amber-500 text-white border-amber-500' },
   { key: 'sin_respaldo', label: '🔴 Sin respaldo', activeClass: 'bg-rose-600 text-white border-rose-600' },
   { key: 'no_registrado', label: '🔵 No registrado', activeClass: 'bg-sky-600 text-white border-sky-600' },
@@ -322,23 +322,65 @@ export function ReceiptDetailModal({
           {/* Compact Status + Reason + Link/Unlink bar */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
             <div className="flex flex-wrap items-center gap-1.5">
-              {STATUS_OPTIONS.map((opt) => {
-                const active = item.status === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => onChangeStatus(item.id, opt.key)}
-                    className={`rounded-lg border px-2 py-0.5 text-[11px] font-semibold transition ${
-                      active
-                        ? opt.activeClass
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+              {(() => {
+                const isLinked = item.systemMovements.length > 0 && item.receipts.length > 0;
+                const baseStatus: AuditStatus = isLinked
+                  ? 'conciliado'
+                  : item.systemMovements.length > 0
+                    ? 'sin_respaldo'
+                    : 'no_registrado';
+
+                return STATUS_OPTIONS.map((opt) => {
+                  const isBaseActive = opt.key === baseStatus;
+                  const isOverlayActive =
+                    (opt.key === 'validado' && item.status === 'validado') ||
+                    (opt.key === 'revisar' && item.status === 'revisar');
+                  const active = isBaseActive || isOverlayActive;
+
+                  // Incompatible link states cannot be toggled directly
+                  const isIncompatible =
+                    (isLinked && (opt.key === 'sin_respaldo' || opt.key === 'no_registrado')) ||
+                    (!isLinked && opt.key === 'conciliado') ||
+                    (!isLinked && opt.key !== baseStatus && (opt.key === 'sin_respaldo' || opt.key === 'no_registrado'));
+
+                  const handleClick = () => {
+                    if (isIncompatible) return;
+                    if (opt.key === 'validado') {
+                      onChangeStatus(item.id, item.status === 'validado' ? baseStatus : 'validado');
+                    } else if (opt.key === 'revisar') {
+                      onChangeStatus(item.id, item.status === 'revisar' ? baseStatus : 'revisar');
+                    } else {
+                      // Clicking base state (Conciliado / Sin respaldo / No registrado) clears Validado/Revisar
+                      onChangeStatus(item.id, baseStatus);
+                    }
+                  };
+
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      disabled={isIncompatible}
+                      onClick={handleClick}
+                      title={
+                        isIncompatible
+                          ? isLinked
+                            ? 'Incompatible con Conciliado (usá Desvincular primero)'
+                            : 'Incompatible sin vínculo (usá Vincular primero)'
+                          : undefined
+                      }
+                      className={`rounded-lg border px-2 py-0.5 text-[11px] font-semibold transition ${
+                        active
+                          ? opt.activeClass
+                          : isIncompatible
+                            ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-50'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                });
+              })()}
               <span className="ml-1 hidden truncate text-[11px] text-slate-500 xl:inline">
                 · {item.reason}
               </span>
