@@ -220,6 +220,7 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
 
   // Close context menu / popovers on outside click
@@ -379,6 +380,7 @@ export default function App() {
 
   const handleAppendMinutas = async (files: FileList | File[]) => {
     setErrorMsg(null);
+    setInfoMsg(null);
     try {
       const { docxFiles, emailsProcessed } = await extractDocxFromMixedFiles(files);
       if (docxFiles.length === 0) {
@@ -391,22 +393,42 @@ export default function App() {
       }
       const rawNewImgs = await extractImagesFromDocxFiles(docxFiles);
       const stamp = Date.now();
-      const existingHashes = new Map<string, string>();
-      for (const img of extractedImages) {
-        if (!existingHashes.has(img.sha256)) {
-          existingHashes.set(img.sha256, `${img.minutaFile} / ${img.imageName}`);
-        }
-      }
-      const uniqueNewImgs: ExtractedImage[] = rawNewImgs.map((img, i) => ({
-        ...img,
-        id: `add${stamp}_${i}::${img.minutaFile}::${img.imageName}`,
-        duplicateOf: img.duplicateOf ?? existingHashes.get(img.sha256),
-      }));
+      const seenHashes = new Set<string>(extractedImages.map((img) => img.sha256));
 
-      setDocxFileNames((prev) => [...prev, ...docxFiles.map((f) => f.name)]);
-      setExtractedImages((prev) => [...prev, ...uniqueNewImgs]);
-      setPendingNewImages((prev) => [...prev, ...uniqueNewImgs]);
+      const trulyNewImgs: ExtractedImage[] = [];
+      let skippedDuplicates = 0;
+
+      for (let i = 0; i < rawNewImgs.length; i++) {
+        const img = rawNewImgs[i];
+        if (seenHashes.has(img.sha256)) {
+          skippedDuplicates++;
+          continue;
+        }
+        seenHashes.add(img.sha256);
+        trulyNewImgs.push({
+          ...img,
+          id: `add${stamp}_${i}::${img.minutaFile}::${img.imageName}`,
+          duplicateOf: undefined,
+        });
+      }
+
+      if (trulyNewImgs.length === 0) {
+        setInfoMsg(
+          `No se encontraron hojas nuevas — se descartaron automáticamente ${skippedDuplicates} hojas duplicadas que ya estaban cargadas.`
+        );
+        return;
+      }
+
+      const newMinutaFiles = Array.from(new Set(trulyNewImgs.map((img) => img.minutaFile)));
+      setDocxFileNames((prev) => Array.from(new Set([...prev, ...newMinutaFiles])));
+      setExtractedImages((prev) => [...prev, ...trulyNewImgs]);
+      setPendingNewImages((prev) => [...prev, ...trulyNewImgs]);
       setPastedJson('');
+      setInfoMsg(
+        skippedDuplicates > 0
+          ? `Se agregaron ${trulyNewImgs.length} hojas nuevas y se descartaron automáticamente ${skippedDuplicates} duplicadas.`
+          : `Se agregaron ${trulyNewImgs.length} hojas nuevas listas para bajar el PDF.`
+      );
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error al agregar los nuevos archivos .docx / .msg / .eml.'
@@ -416,13 +438,14 @@ export default function App() {
 
   const handleMergeNewReceipts = () => {
     setErrorMsg(null);
+    setInfoMsg(null);
     if (items.length === 0) {
       handleRunReconciliation();
       return;
     }
     try {
       const targetImages = pendingNewImages.length > 0 ? pendingNewImages : extractedImages;
-      const newReceipts = parseManualGeminiJson(pastedJson, targetImages).map((r, i) => ({
+      const parsedNewReceipts = parseManualGeminiJson(pastedJson, targetImages).map((r, i) => ({
         ...r,
         id: `added-${Date.now()}-${i}`,
       }));
@@ -434,6 +457,38 @@ export default function App() {
       const unbackedItems = items.filter(
         (it) => it.systemMovements.length > 0 && it.receipts.length === 0
       );
+
+      // Build duplicate-detection keys from already-existing receipts in untouched items
+      const normNum = (s: string) => s.replace(/\D/g, '').replace(/^0+/, '');
+      const existingReceiptKeys = new Set<string>();
+      for (const it of untouchedItems) {
+        for (const r of it.receipts) {
+          const num = normNum(r.nroComprobante || '');
+          const amt = r.importe !== null ? r.importe.toFixed(2) : '';
+          if (num.length >= 4 && amt) {
+            existingReceiptKeys.add(`num::${num}::${amt}`);
+          }
+          if (r.fechaIso && amt && num.length >= 3) {
+            existingReceiptKeys.add(`dt::${r.fechaIso}::${amt}::${num}`);
+          }
+        }
+      }
+
+      const newReceipts: ExtractedReceipt[] = [];
+      let discardedReceipts = 0;
+      for (const r of parsedNewReceipts) {
+        const num = normNum(r.nroComprobante || '');
+        const amt = r.importe !== null ? r.importe.toFixed(2) : '';
+        const k1 = num.length >= 4 && amt ? `num::${num}::${amt}` : '';
+        const k2 = r.fechaIso && amt && num.length >= 3 ? `dt::${r.fechaIso}::${amt}::${num}` : '';
+        if ((k1 && existingReceiptKeys.has(k1)) || (k2 && existingReceiptKeys.has(k2))) {
+          discardedReceipts++;
+          continue;
+        }
+        if (k1) existingReceiptKeys.add(k1);
+        if (k2) existingReceiptKeys.add(k2);
+        newReceipts.push(r);
+      }
 
       // Preserve any notes/auditField written on unbacked items
       const metaBySysId = new Map<string, { auditorNote: string; auditField?: string; status: AuditStatus }>();
@@ -470,6 +525,11 @@ export default function App() {
       setPendingNewImages([]);
       setPastedJson('');
       setSetupExpanded(false);
+      if (discardedReceipts > 0) {
+        setInfoMsg(
+          `Se sumaron ${newReceipts.length} comprobantes nuevos y se descartaron ${discardedReceipts} duplicados.`
+        );
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Error al procesar el JSON nuevo.');
     }
@@ -1363,6 +1423,13 @@ export default function App() {
                 <div className="mt-3 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
                   <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
                   <span>{errorMsg}</span>
+                </div>
+              )}
+
+              {infoMsg && (
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span>{infoMsg}</span>
                 </div>
               )}
             </div>
