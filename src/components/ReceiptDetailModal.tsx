@@ -446,7 +446,10 @@ export function ReceiptDetailModal({
                             <button
                               key={cat.id}
                               type="button"
-                              onClick={() => onToggleCategory(item.id, cat.id)}
+                              onClick={() => {
+                                onToggleCategory(item.id, cat.id);
+                                setCatDropdownOpen(false);
+                              }}
                               className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
                             >
                               <span className="flex items-center gap-2 truncate">
