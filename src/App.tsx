@@ -486,24 +486,6 @@ export default function App() {
     setModalNavIds([]);
   };
 
-  const handleUpdateReceiptImage = (
-    itemId: string,
-    receiptId: string,
-    globalImageIndex: number
-  ) => {
-    setItems((prev) =>
-      prev.map((it) => {
-        if (it.id !== itemId) return it;
-        return {
-          ...it,
-          receipts: it.receipts.map((r) =>
-            r.id === receiptId ? { ...r, resolvedImageIndex: globalImageIndex } : r
-          ),
-        };
-      })
-    );
-  };
-
   const handleSaveNote = (itemId: string, auditorNote: string) => {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
   };
@@ -1586,7 +1568,6 @@ export default function App() {
             }}
             onChangeStatus={handleChangeStatus}
             onUnlink={handleUnlinkItem}
-            onUpdateReceiptImage={handleUpdateReceiptImage}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
             onOpenCategoryManager={() => setCatModalOpen(true)}

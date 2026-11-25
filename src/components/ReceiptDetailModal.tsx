@@ -12,9 +12,15 @@ import {
   ChevronLeft,
   ChevronRight,
   Unlink2,
+  Check,
+  StickyNote,
+  X,
 } from 'lucide-react';
 import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
+
+const MAX_ZOOM = 5;
+const DEFAULT_ZOOM = MAX_ZOOM / 2; // 2.5x — half of max zoom by default
 
 const STATUS_OPTIONS: Array<{
   key: AuditStatus;
@@ -41,7 +47,6 @@ interface ReceiptDetailModalProps {
   onClose: () => void;
   onChangeStatus: (itemId: string, status: AuditStatus) => void;
   onUnlink: (itemId: string) => void;
-  onUpdateReceiptImage: (itemId: string, receiptId: string, globalImageIndex: number) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
   onOpenCategoryManager: () => void;
@@ -61,20 +66,22 @@ export function ReceiptDetailModal({
   onClose,
   onChangeStatus,
   onUnlink,
-  onUpdateReceiptImage,
   onSaveNote,
   onToggleCategory,
   onOpenCategoryManager,
 }: ReceiptDetailModalProps) {
   const [rotation, setRotation] = useState(0);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [panMode, setPanMode] = useState(true);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
-  const modalBodyRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
+
+  // Compact toolbar popovers / sub-modal
+  const [catDropdownOpen, setCatDropdownOpen] = useState(false);
+  const [obsModalOpen, setObsModalOpen] = useState(false);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -88,36 +95,51 @@ export function ReceiptDetailModal({
     };
   }, [Boolean(item)]);
 
-  // Non-passive wheel listener on the image preview ONLY so wheel zooms without scrolling modal/page
+  // Non-passive wheel listener on the image preview ONLY so wheel zooms without scrolling page
   useEffect(() => {
     const el = previewViewportRef.current;
     if (!el || !item) return;
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      const delta = e.deltaY < 0 ? 0.2 : -0.2;
-      setZoom((z) => Math.min(5, Math.max(0.5, +(z + delta).toFixed(2))));
+      const delta = e.deltaY < 0 ? 0.25 : -0.25;
+      setZoom((z) => Math.min(MAX_ZOOM, Math.max(0.5, +(z + delta).toFixed(2))));
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
   }, [item?.id, activeReceiptIdx]);
 
+  // Reset view when switching to another record
   useEffect(() => {
     if (!item) return;
     setDraftNote(item.auditorNote ?? '');
     setRotation(0);
-    setZoom(1);
+    setZoom(DEFAULT_ZOOM);
     setPan({ x: 0, y: 0 });
     setIsDragging(false);
     setActiveReceiptIdx(0);
+    setCatDropdownOpen(false);
+    setObsModalOpen(false);
     setSavedFlash(false);
   }, [item?.id]);
 
+  // Keyboard navigation (← / → / Enter / Escape)
   useEffect(() => {
     if (!item) return;
     const onKey = (e: KeyboardEvent) => {
+      if (obsModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setObsModalOpen(false);
+        }
+        return;
+      }
       if (e.key === 'Escape') {
-        onClose();
+        if (catDropdownOpen) {
+          setCatDropdownOpen(false);
+        } else {
+          onClose();
+        }
         return;
       }
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
@@ -132,62 +154,50 @@ export function ReceiptDetailModal({
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [item, onClose, hasPrev, hasNext, onPrev, onNext]);
+  }, [item, obsModalOpen, catDropdownOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
 
   if (!item) return null;
 
   const safeIdx = Math.min(activeReceiptIdx, Math.max(0, item.receipts.length - 1));
   const activeReceipt = item.receipts[safeIdx] ?? null;
 
-  // Build sheet options with their global index in allImages
-  const sameMinutaEntries = activeReceipt
-    ? allImages
-        .map((img, globalIdx) => ({ img, globalIdx }))
-        .filter((e) => e.img.minutaFile === activeReceipt.minutaFile)
-    : [];
-  const sheetEntries =
-    sameMinutaEntries.length > 1
-      ? sameMinutaEntries
-      : allImages.map((img, globalIdx) => ({ img, globalIdx }));
-
-  // Resolve the best matching image:
-  // 1) Persisted manual choice (resolvedImageIndex)
-  // 2) Exact match by imageId; if multiple images share the same legacy ID (e.g. two "05.docx"),
-  //    disambiguate chronologically by the receipt's YYYY-MM month.
-  let resolvedGlobalIdx = -1;
+  // Automatically resolve image, disambiguating duplicate legacy filenames chronologically by month
+  let activeImage: ExtractedImage | undefined;
   if (activeReceipt) {
     if (
       typeof activeReceipt.resolvedImageIndex === 'number' &&
       allImages[activeReceipt.resolvedImageIndex]
     ) {
-      resolvedGlobalIdx = activeReceipt.resolvedImageIndex;
+      activeImage = allImages[activeReceipt.resolvedImageIndex];
     } else {
-      const idMatches = allImages
-        .map((img, globalIdx) => ({ img, globalIdx }))
-        .filter((e) => e.img.id === activeReceipt.imageId);
+      const idMatches = allImages.filter((img) => img.id === activeReceipt.imageId);
       if (idMatches.length === 1) {
-        resolvedGlobalIdx = idMatches[0].globalIdx;
+        activeImage = idMatches[0];
       } else if (idMatches.length > 1) {
         const months = minutaMonthsMap.get(activeReceipt.minutaFile.toLowerCase()) ?? [];
         const recMonth = activeReceipt.fechaIso?.slice(0, 7) ?? '';
         const monthIdx = recMonth ? months.indexOf(recMonth) : -1;
-        const pickIdx =
-          monthIdx >= 0 ? Math.min(monthIdx, idMatches.length - 1) : 0;
-        resolvedGlobalIdx = idMatches[pickIdx].globalIdx;
+        const pickIdx = monthIdx >= 0 ? Math.min(monthIdx, idMatches.length - 1) : 0;
+        activeImage = idMatches[pickIdx];
       }
     }
   }
 
-  const activeImage = resolvedGlobalIdx >= 0 ? allImages[resolvedGlobalIdx] : undefined;
   const sys = item.systemMovements[0] ?? null;
   const assignedIds = new Set(item.categoryIds ?? []);
+  const assignedCats = categories.filter((c) => assignedIds.has(c.id));
   const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
+  const hasNote = item.auditorNote.trim().length > 0;
 
   const title =
     sys?.descripcion || sys?.razonSocial || activeReceipt?.proveedorOConcepto || 'Detalle de comprobante';
   const meta = [
     sys?.fecha || activeReceipt?.fecha || null,
-    sys?.numero ? `N° ${sys.numero}` : activeReceipt?.nroComprobante ? `N° ${activeReceipt.nroComprobante}` : null,
+    sys?.numero
+      ? `N° ${sys.numero}`
+      : activeReceipt?.nroComprobante
+        ? `N° ${activeReceipt.nroComprobante}`
+        : null,
     sys?.cajero ? `Cajero ${sys.cajero}` : null,
     sys?.balance || null,
   ]
@@ -197,32 +207,33 @@ export function ReceiptDetailModal({
   const handleSaveObs = () => {
     onSaveNote(item.id, draftNote);
     setSavedFlash(true);
-    setTimeout(() => setSavedFlash(false), 2000);
+    setTimeout(() => {
+      setSavedFlash(false);
+      setObsModalOpen(false);
+    }, 450);
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-3 backdrop-blur-xs"
       onClick={onClose}
-      onWheel={(e) => {
-        if (e.target === e.currentTarget && modalBodyRef.current) {
-          modalBodyRef.current.scrollTop += e.deltaY;
-        }
-      }}
     >
       <div
-        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        className="flex h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (catDropdownOpen) setCatDropdownOpen(false);
+        }}
       >
-        {/* Header (Hotelito style + Prev/Next navigation) */}
-        <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4">
+        {/* Compact Header */}
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
           <div className="min-w-0">
-            <h2 className="truncate text-base font-bold text-slate-900">{title}</h2>
-            <p className="mt-0.5 text-xs text-slate-500">{meta || item.reason}</p>
+            <h2 className="truncate text-sm font-bold text-slate-900">{title}</h2>
+            <p className="truncate text-[11px] text-slate-500">{meta || item.reason}</p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {totalCount > 1 && currentIndex >= 0 && (
-              <div className="mr-1 inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
+              <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
                 <button
                   type="button"
                   disabled={!hasPrev}
@@ -256,121 +267,123 @@ export function ReceiptDetailModal({
           </div>
         </div>
 
-        {/* Scrollable Body */}
-        <div ref={modalBodyRef} className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
-          {/* Status Switcher & Unlink */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-700">Estado:</span>
-              <div className="flex flex-wrap gap-1.5">
-                {STATUS_OPTIONS.map((opt) => {
-                  const active = item.status === opt.key;
-                  return (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => onChangeStatus(item.id, opt.key)}
-                      className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
-                        active
-                          ? opt.activeClass
-                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
+        {/* All-at-a-glance Body (no scrolling needed) */}
+        <div className="flex min-h-0 flex-1 flex-col gap-2.5 p-3.5 text-xs">
+          {/* Compact Status + Reason + Unlink bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {STATUS_OPTIONS.map((opt) => {
+                const active = item.status === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => onChangeStatus(item.id, opt.key)}
+                    className={`rounded-lg border px-2 py-0.5 text-[11px] font-semibold transition ${
+                      active
+                        ? opt.activeClass
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+              <span className="ml-1 hidden truncate text-[11px] text-slate-500 xl:inline">
+                · {item.reason}
+              </span>
             </div>
-            {canUnlink && (
-              <button
-                type="button"
-                onClick={() => onUnlink(item.id)}
-                title="Separar este cruce en 'Sin respaldo' + 'No registrado'"
-                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100"
-              >
-                <Unlink2 className="h-3.5 w-3.5" />
-                Desvincular cruce
-              </button>
-            )}
+
+            <div className="flex items-center gap-1.5">
+              {item.hasDuplicateAlert && (
+                <span
+                  title={item.duplicateDetails || 'Posible duplicado'}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                  Duplicado
+                </span>
+              )}
+              {canUnlink && (
+                <button
+                  type="button"
+                  onClick={() => onUnlink(item.id)}
+                  title="Separar este cruce en 'Sin respaldo' + 'No registrado'"
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-100"
+                >
+                  <Unlink2 className="h-3.5 w-3.5" />
+                  Desvincular
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="rounded-xl border border-sky-200 bg-sky-50/70 px-3.5 py-2.5 text-sky-900">
-            <span className="font-semibold">Resultado del cruce: </span>
-            {item.reason}
-          </div>
-
-          {item.hasDuplicateAlert && (
-            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-amber-900">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-              <div>
-                <span className="font-semibold">Alerta de duplicado: </span>
-                {item.duplicateDetails || 'Imagen o comprobante repetido en las minutas.'}
-              </div>
-            </div>
-          )}
-
-          {/* Side-by-side System vs Receipt */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Registro del Sistema
-              </p>
-              {sys ? (
-                <div className="space-y-1 text-slate-700">
-                  <p className="text-base font-bold text-slate-900 tabular-nums">
+          {/* Compact Side-by-side System vs Receipt */}
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Sistema
+                </span>
+                {sys && (
+                  <span className="text-sm font-bold text-slate-900 tabular-nums">
                     {formatARS(sys.total)}
+                  </span>
+                )}
+              </div>
+              {sys ? (
+                <div className="mt-0.5 space-y-0.5 text-[11px] text-slate-700">
+                  <p className="truncate">
+                    <strong>{sys.fecha}</strong> · N° <strong>{sys.numero || '—'}</strong> ·{' '}
+                    {sys.razonSocial}
                   </p>
-                  <p>
-                    Fecha: <strong>{sys.fecha}</strong> · N° <strong>{sys.numero || '—'}</strong>
-                  </p>
-                  <p>{sys.razonSocial}</p>
-                  {sys.descripcion && <p className="text-slate-600">{sys.descripcion}</p>}
-                  <p className="text-slate-500">
-                    Caja {sys.caja} · {sys.cajero} · {sys.balance}
+                  <p className="truncate text-slate-500">
+                    {sys.descripcion ? `${sys.descripcion} · ` : ''}Caja {sys.caja} · {sys.balance}
                   </p>
                 </div>
               ) : (
-                <p className="text-slate-400">No registrado en el listado del sistema.</p>
+                <p className="mt-1 text-[11px] text-slate-400">No registrado en el sistema.</p>
               )}
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <div className="mb-1 flex items-center justify-between">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                  Comprobante en Minuta
-                </p>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Comprobante
+                  </span>
+                  {activeReceipt && (
+                    <span className="rounded bg-indigo-100 px-1.5 py-0.2 text-[10px] font-semibold uppercase text-indigo-700">
+                      {activeReceipt.posicion}
+                    </span>
+                  )}
+                </div>
                 {activeReceipt && (
-                  <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-indigo-700">
-                    {activeReceipt.posicion}
+                  <span className="text-sm font-bold text-slate-900 tabular-nums">
+                    {formatARS(activeReceipt.importe)}
                   </span>
                 )}
               </div>
               {activeReceipt ? (
-                <div className="space-y-1 text-slate-700">
-                  <p className="text-base font-bold text-slate-900 tabular-nums">
-                    {formatARS(activeReceipt.importe)}
+                <div className="mt-0.5 space-y-0.5 text-[11px] text-slate-700">
+                  <p className="truncate">
+                    <strong>{activeReceipt.fecha || '—'}</strong> · N°{' '}
+                    <strong>{activeReceipt.nroComprobante || '—'}</strong> ·{' '}
+                    {activeReceipt.proveedorOConcepto}
                   </p>
-                  <p>
-                    Fecha: <strong>{activeReceipt.fecha || '—'}</strong> · N°{' '}
-                    <strong>{activeReceipt.nroComprobante || '—'}</strong>
-                  </p>
-                  <p>{activeReceipt.proveedorOConcepto}</p>
-                  <p className="text-slate-500">
+                  <p className="truncate text-slate-500">
                     {activeReceipt.tipoComprobante}
-                    {activeReceipt.cuit ? ` · CUIT ${activeReceipt.cuit}` : ''}
-                  </p>
-                  <p className="text-slate-500">
+                    {activeReceipt.cuit ? ` · CUIT ${activeReceipt.cuit}` : ''} ·{' '}
                     {activeReceipt.minutaFile} ({activeReceipt.imageName})
                   </p>
                 </div>
               ) : (
-                <p className="text-slate-400">Sin comprobante vinculado en las minutas.</p>
+                <p className="mt-1 text-[11px] text-slate-400">Sin comprobante en minutas.</p>
               )}
             </div>
           </div>
 
-          {/* Multiple receipts switcher */}
+          {/* Multiple receipts switcher (only when 2+ receipts matched) */}
           {item.receipts.length > 1 && (
             <div className="flex flex-wrap gap-1.5">
               {item.receipts.map((r, i) => (
@@ -378,7 +391,7 @@ export function ReceiptDetailModal({
                   key={r.id}
                   type="button"
                   onClick={() => setActiveReceiptIdx(i)}
-                  className={`rounded-lg px-3 py-1 text-xs font-medium ${
+                  className={`rounded-lg px-2.5 py-0.5 text-[11px] font-medium ${
                     i === safeIdx
                       ? 'bg-indigo-600 text-white'
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -390,45 +403,116 @@ export function ReceiptDetailModal({
             </div>
           )}
 
-          {/* Scanned Image Viewer */}
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3.5 py-2">
+          {/* Full-Height Scanned Image Viewer with Categories Dropdown + Observation Button */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-1.5">
+              {/* Left: File name + Categories dropdown + Observation button */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-slate-700">
                   {activeImage
                     ? `${activeImage.minutaFile} · ${activeImage.imageName}`
-                    : 'Imagen del comprobante'}
+                    : 'Sin imagen vinculada'}
                 </span>
-                {sheetEntries.length > 1 && activeReceipt && (
-                  <select
-                    value={resolvedGlobalIdx >= 0 ? String(resolvedGlobalIdx) : ''}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val !== '') {
-                        onUpdateReceiptImage(item.id, activeReceipt.id, Number(val));
-                        setPan({ x: 0, y: 0 });
-                      }
-                    }}
-                    title="Cambiar y guardar la hoja vinculada a este comprobante"
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 focus:border-indigo-500 focus:outline-none"
+
+                {/* Categories Dropdown */}
+                <div className="relative" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    onClick={() => setCatDropdownOpen((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                      assignedCats.length > 0
+                        ? 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                    }`}
                   >
-                    {resolvedGlobalIdx < 0 && <option value="">Elegir hoja…</option>}
-                    {sheetEntries.map(({ img, globalIdx }, idx) => (
-                      <option key={`${img.id}-${globalIdx}`} value={String(globalIdx)}>
-                        {sameMinutaEntries.length > 1
-                          ? `Hoja ${idx + 1} (${img.imageName})`
-                          : `${img.minutaFile} · ${img.imageName}`}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                    <Tag className="h-3.5 w-3.5" />
+                    {assignedCats.length === 0
+                      ? 'Categorías ▾'
+                      : assignedCats.length === 1
+                        ? `${assignedCats[0].name} ▾`
+                        : `Categorías (${assignedCats.length}) ▾`}
+                  </button>
+
+                  {catDropdownOpen && (
+                    <div className="absolute left-0 top-full z-40 mt-1 w-56 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl">
+                      {categories.length === 0 ? (
+                        <p className="px-2.5 py-1.5 text-[11px] text-slate-400">
+                          No hay categorías creadas.
+                        </p>
+                      ) : (
+                        categories.map((cat) => {
+                          const checked = assignedIds.has(cat.id);
+                          return (
+                            <button
+                              key={cat.id}
+                              type="button"
+                              onClick={() => onToggleCategory(item.id, cat.id)}
+                              className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-100"
+                            >
+                              <span className="flex items-center gap-2 truncate">
+                                <span
+                                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                  style={{ backgroundColor: cat.color }}
+                                />
+                                <span className="truncate font-medium text-slate-800">
+                                  {cat.name}
+                                </span>
+                              </span>
+                              {checked && <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />}
+                            </button>
+                          );
+                        })
+                      )}
+                      <div className="my-1 border-t border-slate-100" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCatDropdownOpen(false);
+                          onOpenCategoryManager();
+                        }}
+                        className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left font-medium text-indigo-600 hover:bg-indigo-50"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Administrar categorías…
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Observation Sub-Modal Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftNote(item.auditorNote ?? '');
+                    setSavedFlash(false);
+                    setObsModalOpen(true);
+                  }}
+                  title={hasNote ? item.auditorNote : 'Agregar observación de auditoría'}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                    hasNote
+                      ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                      : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <StickyNote className="h-3.5 w-3.5" />
+                  {hasNote ? 'Ver / Editar obs.' : 'Observación'}
+                </button>
               </div>
+
+              {/* Right: Hand + Rotate + Zoom controls */}
               {activeImage && (
                 <div className="flex items-center gap-1">
+                  <span className="mr-1 text-[11px] font-medium text-slate-400 tabular-nums">
+                    {Math.round(zoom * 100)}%
+                  </span>
                   <button
                     type="button"
                     onClick={() => setPanMode((v) => !v)}
-                    title={panMode ? 'Herramienta de mano activa (arrastrá para mover)' : 'Activar herramienta de mano'}
+                    title={
+                      panMode
+                        ? 'Herramienta de mano activa (arrastrá para mover)'
+                        : 'Activar herramienta de mano'
+                    }
                     className={`rounded-lg border p-1.5 transition ${
                       panMode
                         ? 'border-indigo-600 bg-indigo-600 text-white'
@@ -447,7 +531,7 @@ export function ReceiptDetailModal({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setZoom((z) => Math.min(4, +(z + 0.35).toFixed(2)))}
+                    onClick={() => setZoom((z) => Math.min(MAX_ZOOM, +(z + 0.35).toFixed(2)))}
                     title="Acercar"
                     className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
                   >
@@ -465,7 +549,7 @@ export function ReceiptDetailModal({
                     type="button"
                     onClick={() => {
                       setRotation(0);
-                      setZoom(1);
+                      setZoom(DEFAULT_ZOOM);
                       setPan({ x: 0, y: 0 });
                     }}
                     title="Restablecer vista"
@@ -476,6 +560,8 @@ export function ReceiptDetailModal({
                 </div>
               )}
             </div>
+
+            {/* Preview Canvas occupying all remaining vertical height */}
             <div
               ref={previewViewportRef}
               onPointerDown={(e) => {
@@ -506,7 +592,7 @@ export function ReceiptDetailModal({
                 setIsDragging(false);
                 dragStartRef.current = null;
               }}
-              className={`flex h-[380px] items-center justify-center overflow-hidden p-4 select-none ${
+              className={`flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 select-none ${
                 panMode && activeImage
                   ? isDragging
                     ? 'cursor-grabbing'
@@ -523,7 +609,7 @@ export function ReceiptDetailModal({
                     transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg)`,
                     transformOrigin: 'center center',
                   }}
-                  className={`max-h-[340px] rounded-lg border border-slate-200 bg-white object-contain shadow-sm ${
+                  className={`max-h-full max-w-full rounded-lg border border-slate-200 bg-white object-contain shadow-sm ${
                     isDragging ? '' : 'transition-transform duration-150'
                   }`}
                 />
@@ -535,115 +621,75 @@ export function ReceiptDetailModal({
               )}
             </div>
           </div>
+        </div>
+      </div>
 
-          {/* Categorization Pills */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="inline-flex items-center gap-1.5 font-semibold text-slate-800">
-                <Tag className="h-3.5 w-3.5 text-indigo-600" />
-                Categorías de auditoría
-              </span>
-              <button
-                type="button"
-                onClick={onOpenCategoryManager}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
-              >
-                <Plus className="h-3 w-3" />
-                Administrar
-              </button>
-            </div>
-            {categories.length === 0 ? (
-              <p className="text-slate-400">
-                Todavía no hay categorías creadas. Hacé clic en <strong>Administrar</strong> para crear una.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {categories.map((cat) => {
-                  const active = assignedIds.has(cat.id);
-                  return (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => onToggleCategory(item.id, cat.id)}
-                      style={
-                        active
-                          ? { backgroundColor: cat.color, borderColor: cat.color, color: '#ffffff' }
-                          : { borderColor: `${cat.color}66`, color: cat.color, backgroundColor: '#ffffff' }
-                      }
-                      className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:opacity-90"
-                    >
-                      <span
-                        className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: active ? '#ffffff' : cat.color }}
-                      />
-                      {cat.name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Hotelito-style Observación de auditoría box */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <strong className="text-xs text-slate-800">
+      {/* Observation Sub-Modal */}
+      {obsModalOpen && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/45 p-4"
+          onClick={(e) => {
+            e.stopPropagation();
+            setObsModalOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <strong className="text-xs font-bold text-slate-900">
                 📝 Observación auditoría{' '}
                 <span className="font-normal text-slate-500">(solo Concilens)</span>
               </strong>
-              {savedFlash && (
-                <span className="text-[11px] font-bold text-emerald-600">✓ Guardado</span>
-              )}
+              <button
+                type="button"
+                onClick={() => setObsModalOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-            <textarea
-              rows={3}
-              value={draftNote}
-              onChange={(e) => setDraftNote(e.target.value)}
-              placeholder="Escribí una observación de auditoría para este registro…"
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            />
-            <div className="mt-2 grid grid-cols-3 items-center gap-2">
-              <div />
-              <div className="flex justify-center">
-                {totalCount > 1 && currentIndex >= 0 && (
-                  <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
-                    <button
-                      type="button"
-                      disabled={!hasPrev}
-                      onClick={onPrev}
-                      title="Movimiento anterior (←)"
-                      className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                    </button>
-                    <span className="px-1 text-[11px] font-semibold text-slate-600 tabular-nums">
-                      {currentIndex + 1} / {totalCount}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={!hasNext}
-                      onClick={onNext}
-                      title="Movimiento siguiente (→ o Enter)"
-                      className="rounded-md p-1 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={handleSaveObs}
-                  className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-                >
-                  Guardar observación
-                </button>
+            <div className="p-4">
+              <textarea
+                rows={4}
+                autoFocus
+                value={draftNote}
+                onChange={(e) => setDraftNote(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSaveObs();
+                  }
+                }}
+                placeholder="Escribí una observación de auditoría para este registro…"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-emerald-600">
+                  {savedFlash ? '✓ Guardado' : ''}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setObsModalOpen(false)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveObs}
+                    className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Guardar observación
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
