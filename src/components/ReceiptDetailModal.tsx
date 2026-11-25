@@ -16,6 +16,8 @@ import {
   StickyNote,
   X,
   ArrowLeftRight,
+  Link2,
+  Search,
 } from 'lucide-react';
 import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -39,6 +41,7 @@ interface ReceiptDetailModalProps {
   allImages: ExtractedImage[];
   minutaMonthsMap: Map<string, string[]>;
   flippedMinutas: Set<string>;
+  linkCandidates: ReconciliationItem[];
   categories: AuditCategory[];
   currentIndex: number;
   totalCount: number;
@@ -49,6 +52,7 @@ interface ReceiptDetailModalProps {
   onClose: () => void;
   onChangeStatus: (itemId: string, status: AuditStatus) => void;
   onUnlink: (itemId: string) => void;
+  onLinkItems: (currentItemId: string, targetItemId: string) => void;
   onToggleFlipMinuta: (minutaFile: string) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
@@ -60,6 +64,7 @@ export function ReceiptDetailModal({
   allImages,
   minutaMonthsMap,
   flippedMinutas,
+  linkCandidates,
   categories,
   currentIndex,
   totalCount,
@@ -70,6 +75,7 @@ export function ReceiptDetailModal({
   onClose,
   onChangeStatus,
   onUnlink,
+  onLinkItems,
   onToggleFlipMinuta,
   onSaveNote,
   onToggleCategory,
@@ -84,9 +90,11 @@ export function ReceiptDetailModal({
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
 
-  // Compact toolbar popovers / sub-modal
+  // Compact toolbar popovers / sub-modals
   const [catDropdownOpen, setCatDropdownOpen] = useState(false);
   const [obsModalOpen, setObsModalOpen] = useState(false);
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+  const [linkQuery, setLinkQuery] = useState('');
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -125,6 +133,8 @@ export function ReceiptDetailModal({
     setActiveReceiptIdx(0);
     setCatDropdownOpen(false);
     setObsModalOpen(false);
+    setLinkModalOpen(false);
+    setLinkQuery('');
     setSavedFlash(false);
   }, [item?.id]);
 
@@ -136,6 +146,13 @@ export function ReceiptDetailModal({
         if (e.key === 'Escape') {
           e.preventDefault();
           setObsModalOpen(false);
+        }
+        return;
+      }
+      if (linkModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setLinkModalOpen(false);
         }
         return;
       }
@@ -159,7 +176,7 @@ export function ReceiptDetailModal({
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [item, obsModalOpen, catDropdownOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
+  }, [item, obsModalOpen, linkModalOpen, catDropdownOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
 
   if (!item) return null;
 
@@ -324,6 +341,24 @@ export function ReceiptDetailModal({
                 >
                   <Unlink2 className="h-3.5 w-3.5" />
                   Desvincular
+                </button>
+              )}
+              {!canUnlink && linkCandidates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLinkQuery('');
+                    setLinkModalOpen(true);
+                  }}
+                  title={
+                    sys
+                      ? 'Vincular un comprobante "No registrado" a este movimiento'
+                      : 'Vincular este comprobante a un movimiento "Sin respaldo"'
+                  }
+                  className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  {sys ? 'Vincular comprobante' : 'Vincular a sistema'}
                 </button>
               )}
             </div>
@@ -714,6 +749,142 @@ export function ReceiptDetailModal({
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Manual Link Sub-Modal */}
+      {linkModalOpen && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/45 p-4"
+          onClick={(e) => {
+            e.stopPropagation();
+            setLinkModalOpen(false);
+          }}
+        >
+          <div
+            className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div>
+                <h3 className="text-xs font-bold text-slate-900">
+                  {sys
+                    ? '🔗 Seleccionar comprobante "No registrado" para vincular'
+                    : '🔗 Seleccionar movimiento "Sin respaldo" para vincular'}
+                </h3>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Ordenados por importe más parecido al actual ({formatARS(sys?.total ?? activeReceipt?.importe)}).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLinkModalOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="border-b border-slate-100 p-3">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  autoFocus
+                  value={linkQuery}
+                  onChange={(e) => setLinkQuery(e.target.value)}
+                  placeholder="Buscar por monto, fecha, N°, proveedor o archivo…"
+                  className="w-full rounded-lg border border-slate-200 py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 divide-y divide-slate-100 overflow-y-auto">
+              {(() => {
+                const refAmount = sys?.total ?? activeReceipt?.importe ?? 0;
+                const q = linkQuery.trim().toLowerCase();
+                const filtered = linkCandidates
+                  .filter((cand) => {
+                    if (!q) return true;
+                    const cSys = cand.systemMovements[0];
+                    const cRec = cand.receipts[0];
+                    const hay = [
+                      cSys?.fecha,
+                      cSys?.numero,
+                      cSys?.razonSocial,
+                      cSys?.descripcion,
+                      cSys?.total,
+                      cRec?.fecha,
+                      cRec?.nroComprobante,
+                      cRec?.proveedorOConcepto,
+                      cRec?.minutaFile,
+                      cRec?.importe,
+                    ]
+                      .filter((v) => v !== undefined && v !== null)
+                      .join(' ')
+                      .toLowerCase();
+                    return hay.includes(q);
+                  })
+                  .sort((a, b) => {
+                    const amtA = a.systemMovements[0]?.total ?? a.receipts[0]?.importe ?? 0;
+                    const amtB = b.systemMovements[0]?.total ?? b.receipts[0]?.importe ?? 0;
+                    return Math.abs(amtA - refAmount) - Math.abs(amtB - refAmount);
+                  });
+
+                if (filtered.length === 0) {
+                  return (
+                    <p className="p-6 text-center text-xs text-slate-400">
+                      No hay candidatos disponibles para ese filtro.
+                    </p>
+                  );
+                }
+
+                return filtered.map((cand) => {
+                  const cSys = cand.systemMovements[0];
+                  const cRec = cand.receipts[0];
+                  const amt = cSys?.total ?? cRec?.importe ?? 0;
+                  const exactMatch = Math.abs(amt - refAmount) <= 0.05;
+
+                  return (
+                    <button
+                      key={cand.id}
+                      type="button"
+                      onClick={() => {
+                        onLinkItems(item.id, cand.id);
+                        setLinkModalOpen(false);
+                      }}
+                      className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-indigo-50/70"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-xs font-semibold text-slate-900">
+                            {cSys?.descripcion || cSys?.razonSocial || cRec?.proveedorOConcepto || '—'}
+                          </span>
+                          {exactMatch && (
+                            <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                              Mismo importe
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 truncate text-[11px] text-slate-500">
+                          {cSys
+                            ? `${cSys.fecha} · N° ${cSys.numero || '—'} · ${cSys.balance}`
+                            : `${cRec?.fecha || '—'} · N° ${cRec?.nroComprobante || '—'} · ${cRec?.minutaFile} (${cRec?.imageName})`}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-xs font-bold text-slate-900 tabular-nums">
+                          {formatARS(amt)}
+                        </p>
+                        <span className="text-[10px] font-semibold text-indigo-600">
+                          Vincular →
+                        </span>
+                      </div>
+                    </button>
+                  );
+                });
+              })()}
             </div>
           </div>
         </div>

@@ -495,6 +495,53 @@ export default function App() {
     setModalNavIds([]);
   };
 
+  const handleLinkItems = (currentItemId: string, targetItemId: string) => {
+    const mergedId = `linked-${Date.now()}`;
+    setItems((prev) => {
+      const a = prev.find((it) => it.id === currentItemId);
+      const b = prev.find((it) => it.id === targetItemId);
+      if (!a || !b) return prev;
+
+      const systemMovements = [...a.systemMovements, ...b.systemMovements];
+      const receipts = [...a.receipts, ...b.receipts];
+      const mergedCategories = Array.from(
+        new Set([...(a.categoryIds ?? []), ...(b.categoryIds ?? [])])
+      );
+      const mergedNote = [a.auditorNote.trim(), b.auditorNote.trim()]
+        .filter(Boolean)
+        .join(' | ');
+
+      const merged: ReconciliationItem = {
+        id: mergedId,
+        status: 'conciliado',
+        reason: 'Conciliado manualmente por auditoría',
+        matchScore: 100,
+        systemMovements,
+        receipts,
+        hasDuplicateAlert: a.hasDuplicateAlert || b.hasDuplicateAlert,
+        duplicateDetails: a.duplicateDetails || b.duplicateDetails,
+        manualState: 'aprobado',
+        categoryIds: mergedCategories,
+        auditorNote: mergedNote,
+      };
+
+      const insertIdx = prev.findIndex((it) => it.id === currentItemId);
+      const remaining = prev.filter(
+        (it) => it.id !== currentItemId && it.id !== targetItemId
+      );
+      const next = [...remaining];
+      next.splice(Math.min(insertIdx, next.length), 0, merged);
+      return next;
+    });
+
+    setDetailItemId(mergedId);
+    setModalNavIds((prev) =>
+      prev
+        .map((id) => (id === currentItemId ? mergedId : id))
+        .filter((id) => id !== targetItemId)
+    );
+  };
+
   const handleToggleFlipMinuta = (minutaFile: string) => {
     const key = minutaFile.toLowerCase();
     setFlippedMinutas((prev) => {
@@ -1568,12 +1615,20 @@ export default function App() {
       {(() => {
         const navList = modalNavIds.length > 0 ? modalNavIds : visibleItems.map((v) => v.id);
         const idx = detailItemId ? navList.indexOf(detailItemId) : -1;
+        const linkCandidates = detailItem
+          ? detailItem.systemMovements.length > 0 && detailItem.receipts.length === 0
+            ? items.filter((it) => it.systemMovements.length === 0 && it.receipts.length > 0)
+            : detailItem.systemMovements.length === 0 && detailItem.receipts.length > 0
+              ? items.filter((it) => it.systemMovements.length > 0 && it.receipts.length === 0)
+              : []
+          : [];
         return (
           <ReceiptDetailModal
             item={detailItem}
             allImages={extractedImages}
             minutaMonthsMap={minutaMonthsMap}
             flippedMinutas={flippedMinutas}
+            linkCandidates={linkCandidates}
             categories={categories}
             currentIndex={idx}
             totalCount={navList.length}
@@ -1593,6 +1648,7 @@ export default function App() {
             }}
             onChangeStatus={handleChangeStatus}
             onUnlink={handleUnlinkItem}
+            onLinkItems={handleLinkItems}
             onToggleFlipMinuta={handleToggleFlipMinuta}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
