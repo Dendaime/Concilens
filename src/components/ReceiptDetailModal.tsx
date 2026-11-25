@@ -73,7 +73,7 @@ export function ReceiptDetailModal({
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const modalBodyRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
-  const [manualImageId, setManualImageId] = useState<string | null>(null);
+  const [manualSheetIdx, setManualSheetIdx] = useState<number | null>(null);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -99,7 +99,7 @@ export function ReceiptDetailModal({
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
-  }, [item?.id, activeReceiptIdx, manualImageId]);
+  }, [item?.id, activeReceiptIdx, manualSheetIdx]);
 
   useEffect(() => {
     if (!item) return;
@@ -109,7 +109,7 @@ export function ReceiptDetailModal({
     setPan({ x: 0, y: 0 });
     setIsDragging(false);
     setActiveReceiptIdx(0);
-    setManualImageId(null);
+    setManualSheetIdx(null);
     setSavedFlash(false);
   }, [item?.id]);
 
@@ -138,18 +138,24 @@ export function ReceiptDetailModal({
 
   const safeIdx = Math.min(activeReceiptIdx, Math.max(0, item.receipts.length - 1));
   const activeReceipt = item.receipts[safeIdx] ?? null;
-  const activeImage = manualImageId
-    ? imagesById.get(manualImageId)
-    : activeReceipt
-      ? imagesById.get(activeReceipt.imageId)
-      : undefined;
-  const sys = item.systemMovements[0] ?? null;
-  const assignedIds = new Set(item.categoryIds ?? []);
-  const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
   const sameMinutaImages = activeReceipt
     ? allImages.filter((img) => img.minutaFile === activeReceipt.minutaFile)
     : [];
   const sheetOptions = sameMinutaImages.length > 1 ? sameMinutaImages : allImages;
+  const defaultImage = activeReceipt ? imagesById.get(activeReceipt.imageId) : undefined;
+  const activeImage =
+    manualSheetIdx !== null && sheetOptions[manualSheetIdx]
+      ? sheetOptions[manualSheetIdx]
+      : defaultImage;
+  const selectedSheetIdx =
+    manualSheetIdx !== null
+      ? manualSheetIdx
+      : defaultImage
+        ? sheetOptions.indexOf(defaultImage)
+        : -1;
+  const sys = item.systemMovements[0] ?? null;
+  const assignedIds = new Set(item.categoryIds ?? []);
+  const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
 
   const title =
     sys?.descripcion || sys?.razonSocial || activeReceipt?.proveedorOConcepto || 'Detalle de comprobante';
@@ -369,17 +375,18 @@ export function ReceiptDetailModal({
                 </span>
                 {sheetOptions.length > 1 && (
                   <select
-                    value={activeImage?.id ?? ''}
+                    value={selectedSheetIdx >= 0 ? String(selectedSheetIdx) : ''}
                     onChange={(e) => {
-                      setManualImageId(e.target.value || null);
+                      const val = e.target.value;
+                      setManualSheetIdx(val === '' ? null : Number(val));
                       setPan({ x: 0, y: 0 });
                     }}
                     title="Cambiar hoja previsualizada"
                     className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 focus:border-indigo-500 focus:outline-none"
                   >
-                    {!activeImage && <option value="">Elegir hoja…</option>}
+                    {selectedSheetIdx < 0 && <option value="">Elegir hoja…</option>}
                     {sheetOptions.map((img, idx) => (
-                      <option key={img.id} value={img.id}>
+                      <option key={`${img.id}-${idx}`} value={String(idx)}>
                         {sameMinutaImages.length > 1
                           ? `Hoja ${idx + 1} (${img.imageName})`
                           : `${img.minutaFile} · ${img.imageName}`}

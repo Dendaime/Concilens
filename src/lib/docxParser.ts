@@ -47,8 +47,19 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 export async function extractImagesFromDocxFiles(files: File[]): Promise<ExtractedImage[]> {
   const allImages: ExtractedImage[] = [];
   const seenHashes = new Map<string, string>(); // sha256 -> "minutaFile/imageName"
+  const nameCounts = new Map<string, number>();
 
-  for (const file of files) {
+  for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+    const file = files[fileIdx];
+    const baseKey = file.name.toLowerCase();
+    const count = (nameCounts.get(baseKey) ?? 0) + 1;
+    nameCounts.set(baseKey, count);
+
+    const displayName =
+      count === 1
+        ? file.name
+        : file.name.replace(/(\.docx)$/i, ` (${count})$1`);
+
     const zip = await JSZip.loadAsync(file);
     const parsedDate = parseDateFromFilename(file.name);
 
@@ -68,15 +79,15 @@ export async function extractImagesFromDocxFiles(files: File[]): Promise<Extract
       const base64 = arrayBufferToBase64(buffer);
       const dataUrl = `data:${mimeType};base64,${base64}`;
 
-      const refLabel = `${file.name} / ${imageName}`;
+      const refLabel = `${displayName} / ${imageName}`;
       const duplicateOf = seenHashes.get(sha256);
       if (!duplicateOf) {
         seenHashes.set(sha256, refLabel);
       }
 
       allImages.push({
-        id: `${file.name}::${imageName}`,
-        minutaFile: file.name,
+        id: `f${fileIdx}::${displayName}::${imageName}`,
+        minutaFile: displayName,
         minutaDate: parsedDate?.display ?? null,
         minutaDateIso: parsedDate?.iso ?? null,
         imageName,
