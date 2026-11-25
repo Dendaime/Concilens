@@ -433,6 +433,46 @@ export default function App() {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, status } : it)));
   };
 
+  const handleUnlinkItem = (itemId: string) => {
+    setItems((prev) => {
+      const target = prev.find((it) => it.id === itemId);
+      if (!target || target.systemMovements.length === 0 || target.receipts.length === 0) {
+        return prev;
+      }
+      const unbacked: ReconciliationItem[] = target.systemMovements.map((sys) => ({
+        id: `unlinked-sys-${sys.id}-${Date.now()}`,
+        status: 'sin_respaldo',
+        reason: 'Desvinculado manualmente por auditoría (sin comprobante válido)',
+        matchScore: 0,
+        systemMovements: [sys],
+        receipts: [],
+        hasDuplicateAlert: false,
+        manualState: 'pendiente',
+        categoryIds: target.categoryIds ?? [],
+        auditorNote: target.auditorNote,
+      }));
+      const unregistered: ReconciliationItem[] = target.receipts.map((rec) => ({
+        id: `unlinked-rec-${rec.id}-${Date.now()}`,
+        status: 'no_registrado',
+        reason: 'Comprobante desvinculado manualmente por auditoría',
+        matchScore: 0,
+        systemMovements: [],
+        receipts: [rec],
+        hasDuplicateAlert: rec.isDuplicateImage || rec.isDuplicateReceipt,
+        duplicateDetails: rec.duplicateReason,
+        manualState: 'pendiente',
+        categoryIds: [],
+        auditorNote: '',
+      }));
+      const idx = prev.findIndex((it) => it.id === itemId);
+      const next = [...prev];
+      next.splice(idx, 1, ...unbacked, ...unregistered);
+      return next;
+    });
+    setDetailItemId(null);
+    setModalNavIds([]);
+  };
+
   const handleSaveNote = (itemId: string, auditorNote: string) => {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
   };
@@ -1495,6 +1535,7 @@ export default function App() {
           <ReceiptDetailModal
             item={detailItem}
             imagesById={imagesById}
+            allImages={extractedImages}
             categories={categories}
             currentIndex={idx}
             totalCount={navList.length}
@@ -1513,6 +1554,7 @@ export default function App() {
               setModalNavIds([]);
             }}
             onChangeStatus={handleChangeStatus}
+            onUnlink={handleUnlinkItem}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
             onOpenCategoryManager={() => setCatModalOpen(true)}

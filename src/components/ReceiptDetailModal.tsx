@@ -11,6 +11,7 @@ import {
   Hand,
   ChevronLeft,
   ChevronRight,
+  Unlink2,
 } from 'lucide-react';
 import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -29,6 +30,7 @@ const STATUS_OPTIONS: Array<{
 interface ReceiptDetailModalProps {
   item: ReconciliationItem | null;
   imagesById: Map<string, ExtractedImage>;
+  allImages: ExtractedImage[];
   categories: AuditCategory[];
   currentIndex: number;
   totalCount: number;
@@ -38,6 +40,7 @@ interface ReceiptDetailModalProps {
   onNext: () => void;
   onClose: () => void;
   onChangeStatus: (itemId: string, status: AuditStatus) => void;
+  onUnlink: (itemId: string) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
   onOpenCategoryManager: () => void;
@@ -46,6 +49,7 @@ interface ReceiptDetailModalProps {
 export function ReceiptDetailModal({
   item,
   imagesById,
+  allImages,
   categories,
   currentIndex,
   totalCount,
@@ -55,6 +59,7 @@ export function ReceiptDetailModal({
   onNext,
   onClose,
   onChangeStatus,
+  onUnlink,
   onSaveNote,
   onToggleCategory,
   onOpenCategoryManager,
@@ -68,6 +73,7 @@ export function ReceiptDetailModal({
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const modalBodyRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
+  const [manualImageId, setManualImageId] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -93,7 +99,7 @@ export function ReceiptDetailModal({
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
-  }, [item?.id, activeReceiptIdx]);
+  }, [item?.id, activeReceiptIdx, manualImageId]);
 
   useEffect(() => {
     if (!item) return;
@@ -103,6 +109,7 @@ export function ReceiptDetailModal({
     setPan({ x: 0, y: 0 });
     setIsDragging(false);
     setActiveReceiptIdx(0);
+    setManualImageId(null);
     setSavedFlash(false);
   }, [item?.id]);
 
@@ -131,9 +138,18 @@ export function ReceiptDetailModal({
 
   const safeIdx = Math.min(activeReceiptIdx, Math.max(0, item.receipts.length - 1));
   const activeReceipt = item.receipts[safeIdx] ?? null;
-  const activeImage = activeReceipt ? imagesById.get(activeReceipt.imageId) : undefined;
+  const activeImage = manualImageId
+    ? imagesById.get(manualImageId)
+    : activeReceipt
+      ? imagesById.get(activeReceipt.imageId)
+      : undefined;
   const sys = item.systemMovements[0] ?? null;
   const assignedIds = new Set(item.categoryIds ?? []);
+  const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
+  const sameMinutaImages = activeReceipt
+    ? allImages.filter((img) => img.minutaFile === activeReceipt.minutaFile)
+    : [];
+  const sheetOptions = sameMinutaImages.length > 1 ? sameMinutaImages : allImages;
 
   const title =
     sys?.descripcion || sys?.razonSocial || activeReceipt?.proveedorOConcepto || 'Detalle de comprobante';
@@ -210,28 +226,41 @@ export function ReceiptDetailModal({
 
         {/* Scrollable Body */}
         <div ref={modalBodyRef} className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
-          {/* Status Switcher & Reason */}
+          {/* Status Switcher & Unlink */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
-            <span className="font-semibold text-slate-700">Estado del registro:</span>
-            <div className="flex flex-wrap gap-1.5">
-              {STATUS_OPTIONS.map((opt) => {
-                const active = item.status === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => onChangeStatus(item.id, opt.key)}
-                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
-                      active
-                        ? opt.activeClass
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-700">Estado:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {STATUS_OPTIONS.map((opt) => {
+                  const active = item.status === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => onChangeStatus(item.id, opt.key)}
+                      className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                        active
+                          ? opt.activeClass
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+            {canUnlink && (
+              <button
+                type="button"
+                onClick={() => onUnlink(item.id)}
+                title="Separar este cruce en 'Sin respaldo' + 'No registrado'"
+                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100"
+              >
+                <Unlink2 className="h-3.5 w-3.5" />
+                Desvincular cruce
+              </button>
+            )}
           </div>
 
           <div className="rounded-xl border border-sky-200 bg-sky-50/70 px-3.5 py-2.5 text-sky-900">
@@ -331,12 +360,34 @@ export function ReceiptDetailModal({
 
           {/* Scanned Image Viewer */}
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5">
-            <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3.5 py-2">
-              <span className="font-semibold text-slate-700">
-                {activeImage
-                  ? `Comprobante escaneado: ${activeImage.minutaFile} · ${activeImage.imageName}`
-                  : 'Imagen del comprobante'}
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3.5 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-slate-700">
+                  {activeImage
+                    ? `${activeImage.minutaFile} · ${activeImage.imageName}`
+                    : 'Imagen del comprobante'}
+                </span>
+                {sheetOptions.length > 1 && (
+                  <select
+                    value={activeImage?.id ?? ''}
+                    onChange={(e) => {
+                      setManualImageId(e.target.value || null);
+                      setPan({ x: 0, y: 0 });
+                    }}
+                    title="Cambiar hoja previsualizada"
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 focus:border-indigo-500 focus:outline-none"
+                  >
+                    {!activeImage && <option value="">Elegir hoja…</option>}
+                    {sheetOptions.map((img, idx) => (
+                      <option key={img.id} value={img.id}>
+                        {sameMinutaImages.length > 1
+                          ? `Hoja ${idx + 1} (${img.imageName})`
+                          : `${img.minutaFile} · ${img.imageName}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               {activeImage && (
                 <div className="flex items-center gap-1">
                   <button

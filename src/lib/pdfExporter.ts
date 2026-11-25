@@ -71,7 +71,11 @@ export async function exportImagesToPdfForGemini(
 
     pdf.setFontSize(9);
     pdf.setTextColor(71, 85, 105);
-    pdf.text(`Archivo: ${img.minutaFile}  |  Hoja: ${filePage}`, margin, margin + 3);
+    pdf.text(
+      `Pág. PDF: ${i + 1}  |  Archivo: ${img.minutaFile}  |  Hoja: ${filePage}`,
+      margin,
+      margin + 3
+    );
 
     const { cleanDataUrl, width, height } = await normalizeImageViaCanvas(img.dataUrl);
     const maxW = pageWidth - margin * 2;

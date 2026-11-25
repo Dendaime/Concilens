@@ -11,6 +11,7 @@ Devolvé ÚNICAMENTE un bloque JSON válido (sin texto adicional) con esta estru
 {
   "comprobantes": [
     {
+      "pagina_pdf": 1,
       "archivo_minuta": "21-10-2026.docx",
       "hoja": 1,
       "fecha": "DD/MM/YYYY",
@@ -31,9 +32,10 @@ Reglas:
 - importe debe ser número con punto decimal, sin $ ni separador de miles (ej: 130011.99).
 - En tickets de combustible/supermercado, usá el TOTAL final a pagar.
 - En recibos manuscritos ("RECIBO N° 9775696"), poné el número preimpreso en nro_comprobante.
-- En hoja poné el número de página/imagen (1, 2, 3...) dentro de ese archivo.`;
+- En pagina_pdf poné el número "Pág. PDF" que figura en el encabezado de cada página.`;
 
 interface RawManualReceipt {
+  pagina_pdf?: number | string | null;
   archivo_minuta?: string | null;
   hoja?: number | string | null;
   fecha?: string | null;
@@ -93,12 +95,18 @@ export function parseManualGeminiJson(
   }
 
   return list.map((r, idx) => {
+    const pdfPage = Number(r.pagina_pdf);
     const fileHint = String(r.archivo_minuta ?? '').trim();
     const pageNum = Number(r.hoja);
 
-    // Try to match an extracted image from the uploaded .docx files
+    // 1) Exact global PDF page match if provided
     let matchedImg: ExtractedImage | undefined;
-    if (extractedImages.length > 0) {
+    if (!isNaN(pdfPage) && pdfPage >= 1 && pdfPage <= extractedImages.length) {
+      matchedImg = extractedImages[pdfPage - 1];
+    }
+
+    // 2) Fallback to archivo_minuta + hoja
+    if (!matchedImg && extractedImages.length > 0) {
       let fileImages = fileHint ? imagesByFile.get(fileHint.toLowerCase()) : undefined;
       if (!fileImages && fileHint) {
         for (const [k, v] of imagesByFile.entries()) {
