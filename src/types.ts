@@ -31,6 +31,7 @@ export interface ExtractedImage {
 export interface ExtractedReceipt {
   id: string;
   imageId: string;
+  resolvedImageIndex?: number;
   minutaFile: string;
   minutaDate: string | null;
   minutaDateIso: string | null;

@@ -29,8 +29,8 @@ const STATUS_OPTIONS: Array<{
 
 interface ReceiptDetailModalProps {
   item: ReconciliationItem | null;
-  imagesById: Map<string, ExtractedImage>;
   allImages: ExtractedImage[];
+  minutaMonthsMap: Map<string, string[]>;
   categories: AuditCategory[];
   currentIndex: number;
   totalCount: number;
@@ -41,6 +41,7 @@ interface ReceiptDetailModalProps {
   onClose: () => void;
   onChangeStatus: (itemId: string, status: AuditStatus) => void;
   onUnlink: (itemId: string) => void;
+  onUpdateReceiptImage: (itemId: string, receiptId: string, globalImageIndex: number) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
   onOpenCategoryManager: () => void;
@@ -48,8 +49,8 @@ interface ReceiptDetailModalProps {
 
 export function ReceiptDetailModal({
   item,
-  imagesById,
   allImages,
+  minutaMonthsMap,
   categories,
   currentIndex,
   totalCount,
@@ -60,6 +61,7 @@ export function ReceiptDetailModal({
   onClose,
   onChangeStatus,
   onUnlink,
+  onUpdateReceiptImage,
   onSaveNote,
   onToggleCategory,
   onOpenCategoryManager,
@@ -73,7 +75,6 @@ export function ReceiptDetailModal({
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const modalBodyRef = useRef<HTMLDivElement | null>(null);
   const [activeReceiptIdx, setActiveReceiptIdx] = useState(0);
-  const [manualSheetIdx, setManualSheetIdx] = useState<number | null>(null);
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -99,7 +100,7 @@ export function ReceiptDetailModal({
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
-  }, [item?.id, activeReceiptIdx, manualSheetIdx]);
+  }, [item?.id, activeReceiptIdx]);
 
   useEffect(() => {
     if (!item) return;
@@ -109,7 +110,6 @@ export function ReceiptDetailModal({
     setPan({ x: 0, y: 0 });
     setIsDragging(false);
     setActiveReceiptIdx(0);
-    setManualSheetIdx(null);
     setSavedFlash(false);
   }, [item?.id]);
 
@@ -138,21 +138,47 @@ export function ReceiptDetailModal({
 
   const safeIdx = Math.min(activeReceiptIdx, Math.max(0, item.receipts.length - 1));
   const activeReceipt = item.receipts[safeIdx] ?? null;
-  const sameMinutaImages = activeReceipt
-    ? allImages.filter((img) => img.minutaFile === activeReceipt.minutaFile)
+
+  // Build sheet options with their global index in allImages
+  const sameMinutaEntries = activeReceipt
+    ? allImages
+        .map((img, globalIdx) => ({ img, globalIdx }))
+        .filter((e) => e.img.minutaFile === activeReceipt.minutaFile)
     : [];
-  const sheetOptions = sameMinutaImages.length > 1 ? sameMinutaImages : allImages;
-  const defaultImage = activeReceipt ? imagesById.get(activeReceipt.imageId) : undefined;
-  const activeImage =
-    manualSheetIdx !== null && sheetOptions[manualSheetIdx]
-      ? sheetOptions[manualSheetIdx]
-      : defaultImage;
-  const selectedSheetIdx =
-    manualSheetIdx !== null
-      ? manualSheetIdx
-      : defaultImage
-        ? sheetOptions.indexOf(defaultImage)
-        : -1;
+  const sheetEntries =
+    sameMinutaEntries.length > 1
+      ? sameMinutaEntries
+      : allImages.map((img, globalIdx) => ({ img, globalIdx }));
+
+  // Resolve the best matching image:
+  // 1) Persisted manual choice (resolvedImageIndex)
+  // 2) Exact match by imageId; if multiple images share the same legacy ID (e.g. two "05.docx"),
+  //    disambiguate chronologically by the receipt's YYYY-MM month.
+  let resolvedGlobalIdx = -1;
+  if (activeReceipt) {
+    if (
+      typeof activeReceipt.resolvedImageIndex === 'number' &&
+      allImages[activeReceipt.resolvedImageIndex]
+    ) {
+      resolvedGlobalIdx = activeReceipt.resolvedImageIndex;
+    } else {
+      const idMatches = allImages
+        .map((img, globalIdx) => ({ img, globalIdx }))
+        .filter((e) => e.img.id === activeReceipt.imageId);
+      if (idMatches.length === 1) {
+        resolvedGlobalIdx = idMatches[0].globalIdx;
+      } else if (idMatches.length > 1) {
+        const months = minutaMonthsMap.get(activeReceipt.minutaFile.toLowerCase()) ?? [];
+        const recMonth = activeReceipt.fechaIso?.slice(0, 7) ?? '';
+        const monthIdx = recMonth ? months.indexOf(recMonth) : -1;
+        const pickIdx =
+          monthIdx >= 0 ? Math.min(monthIdx, idMatches.length - 1) : 0;
+        resolvedGlobalIdx = idMatches[pickIdx].globalIdx;
+      }
+    }
+  }
+
+  const activeImage = resolvedGlobalIdx >= 0 ? allImages[resolvedGlobalIdx] : undefined;
   const sys = item.systemMovements[0] ?? null;
   const assignedIds = new Set(item.categoryIds ?? []);
   const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
@@ -373,21 +399,23 @@ export function ReceiptDetailModal({
                     ? `${activeImage.minutaFile} · ${activeImage.imageName}`
                     : 'Imagen del comprobante'}
                 </span>
-                {sheetOptions.length > 1 && (
+                {sheetEntries.length > 1 && activeReceipt && (
                   <select
-                    value={selectedSheetIdx >= 0 ? String(selectedSheetIdx) : ''}
+                    value={resolvedGlobalIdx >= 0 ? String(resolvedGlobalIdx) : ''}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setManualSheetIdx(val === '' ? null : Number(val));
-                      setPan({ x: 0, y: 0 });
+                      if (val !== '') {
+                        onUpdateReceiptImage(item.id, activeReceipt.id, Number(val));
+                        setPan({ x: 0, y: 0 });
+                      }
                     }}
-                    title="Cambiar hoja previsualizada"
+                    title="Cambiar y guardar la hoja vinculada a este comprobante"
                     className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 focus:border-indigo-500 focus:outline-none"
                   >
-                    {selectedSheetIdx < 0 && <option value="">Elegir hoja…</option>}
-                    {sheetOptions.map((img, idx) => (
-                      <option key={`${img.id}-${idx}`} value={String(idx)}>
-                        {sameMinutaImages.length > 1
+                    {resolvedGlobalIdx < 0 && <option value="">Elegir hoja…</option>}
+                    {sheetEntries.map(({ img, globalIdx }, idx) => (
+                      <option key={`${img.id}-${globalIdx}`} value={String(globalIdx)}>
+                        {sameMinutaEntries.length > 1
                           ? `Hoja ${idx + 1} (${img.imageName})`
                           : `${img.minutaFile} · ${img.imageName}`}
                       </option>

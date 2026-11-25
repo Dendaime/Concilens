@@ -251,11 +251,24 @@ export default function App() {
     categories,
   ]);
 
-  const imagesById = useMemo(() => {
-    const map = new Map<string, ExtractedImage>();
-    for (const img of extractedImages) map.set(img.id, img);
-    return map;
-  }, [extractedImages]);
+  const minutaMonthsMap = useMemo(() => {
+    const sets = new Map<string, Set<string>>();
+    for (const it of items) {
+      for (const r of it.receipts) {
+        const month = r.fechaIso?.slice(0, 7);
+        if (!month) continue;
+        const key = r.minutaFile.toLowerCase();
+        const s = sets.get(key) ?? new Set<string>();
+        s.add(month);
+        sets.set(key, s);
+      }
+    }
+    const result = new Map<string, string[]>();
+    for (const [k, s] of sets.entries()) {
+      result.set(k, Array.from(s).sort());
+    }
+    return result;
+  }, [items]);
 
   const categoriesById = useMemo(() => {
     const map = new Map<string, AuditCategory>();
@@ -471,6 +484,24 @@ export default function App() {
     });
     setDetailItemId(null);
     setModalNavIds([]);
+  };
+
+  const handleUpdateReceiptImage = (
+    itemId: string,
+    receiptId: string,
+    globalImageIndex: number
+  ) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        return {
+          ...it,
+          receipts: it.receipts.map((r) =>
+            r.id === receiptId ? { ...r, resolvedImageIndex: globalImageIndex } : r
+          ),
+        };
+      })
+    );
   };
 
   const handleSaveNote = (itemId: string, auditorNote: string) => {
@@ -1534,8 +1565,8 @@ export default function App() {
         return (
           <ReceiptDetailModal
             item={detailItem}
-            imagesById={imagesById}
             allImages={extractedImages}
+            minutaMonthsMap={minutaMonthsMap}
             categories={categories}
             currentIndex={idx}
             totalCount={navList.length}
@@ -1555,6 +1586,7 @@ export default function App() {
             }}
             onChangeStatus={handleChangeStatus}
             onUnlink={handleUnlinkItem}
+            onUpdateReceiptImage={handleUpdateReceiptImage}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
             onOpenCategoryManager={() => setCatModalOpen(true)}
