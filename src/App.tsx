@@ -162,7 +162,9 @@ export default function App() {
 
   const [docxFileNames, setDocxFileNames] = useState<string[]>([]);
   const [extractedImages, setExtractedImages] = useState<ExtractedImage[]>([]);
+  const [pendingNewImages, setPendingNewImages] = useState<ExtractedImage[]>([]);
   const [extractedReceipts, setExtractedReceipts] = useState<ExtractedReceipt[]>([]);
+  const appendMinutasInputRef = useRef<HTMLInputElement | null>(null);
 
   // Results
   const [items, setItems] = useState<ReconciliationItem[]>([]);
@@ -368,6 +370,104 @@ export default function App() {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error al procesar los archivos .docx / .msg / .eml.'
       );
+    }
+  };
+
+  const handleAppendMinutas = async (files: FileList | File[]) => {
+    setErrorMsg(null);
+    try {
+      const { docxFiles, emailsProcessed } = await extractDocxFromMixedFiles(files);
+      if (docxFiles.length === 0) {
+        setErrorMsg(
+          emailsProcessed > 0
+            ? `Se revisaron ${emailsProcessed} correos (.msg/.eml), pero no contenían adjuntos .docx.`
+            : 'Seleccioná archivos .docx o correos .msg / .eml de Outlook con minutas adjuntas.'
+        );
+        return;
+      }
+      const rawNewImgs = await extractImagesFromDocxFiles(docxFiles);
+      const stamp = Date.now();
+      const existingHashes = new Map<string, string>();
+      for (const img of extractedImages) {
+        if (!existingHashes.has(img.sha256)) {
+          existingHashes.set(img.sha256, `${img.minutaFile} / ${img.imageName}`);
+        }
+      }
+      const uniqueNewImgs: ExtractedImage[] = rawNewImgs.map((img, i) => ({
+        ...img,
+        id: `add${stamp}_${i}::${img.minutaFile}::${img.imageName}`,
+        duplicateOf: img.duplicateOf ?? existingHashes.get(img.sha256),
+      }));
+
+      setDocxFileNames((prev) => [...prev, ...docxFiles.map((f) => f.name)]);
+      setExtractedImages((prev) => [...prev, ...uniqueNewImgs]);
+      setPendingNewImages((prev) => [...prev, ...uniqueNewImgs]);
+      setPastedJson('');
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error al agregar los nuevos archivos .docx / .msg / .eml.'
+      );
+    }
+  };
+
+  const handleMergeNewReceipts = () => {
+    setErrorMsg(null);
+    if (items.length === 0) {
+      handleRunReconciliation();
+      return;
+    }
+    try {
+      const targetImages = pendingNewImages.length > 0 ? pendingNewImages : extractedImages;
+      const newReceipts = parseManualGeminiJson(pastedJson, targetImages).map((r, i) => ({
+        ...r,
+        id: `added-${Date.now()}-${i}`,
+      }));
+
+      // Keep ALL existing items that are NOT pure "Sin respaldo" completely untouched
+      const untouchedItems = items.filter(
+        (it) => !(it.systemMovements.length > 0 && it.receipts.length === 0)
+      );
+      const unbackedItems = items.filter(
+        (it) => it.systemMovements.length > 0 && it.receipts.length === 0
+      );
+
+      // Preserve any notes/auditField written on unbacked items
+      const metaBySysId = new Map<string, { auditorNote: string; auditField?: string; status: AuditStatus }>();
+      for (const it of unbackedItems) {
+        for (const m of it.systemMovements) {
+          metaBySysId.set(m.id, {
+            auditorNote: it.auditorNote,
+            auditField: it.auditField,
+            status: it.status,
+          });
+        }
+      }
+
+      const unbackedMovs = unbackedItems.flatMap((it) => it.systemMovements);
+      const newlyReconciled = reconcileMovementsAndReceipts(unbackedMovs, newReceipts, {
+        dateToleranceDays,
+        amountTolerance: 0.05,
+      }).map((it) => {
+        const prevMeta = it.systemMovements.map((m) => metaBySysId.get(m.id)).find(Boolean);
+        if (!prevMeta) return it;
+        const mergedNote = [it.auditorNote.trim(), prevMeta.auditorNote.trim()]
+          .filter(Boolean)
+          .join(' | ');
+        return {
+          ...it,
+          auditorNote: mergedNote,
+          auditField: prevMeta.auditField,
+        };
+      });
+
+      const combined = [...untouchedItems, ...newlyReconciled];
+      setExtractedReceipts((prev) => [...prev, ...newReceipts]);
+      setItems(combined);
+      setPendingNewImages([]);
+      setPastedJson('');
+      setSetupExpanded(false);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Error al procesar el JSON nuevo.');
     }
   };
 
@@ -1081,9 +1181,34 @@ export default function App() {
                 {/* 2. Minutas .docx / .msg / .eml */}
                 <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div>
-                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
-                      <FileText className="h-4 w-4 text-indigo-600" />
-                      Minutas (.docx) o Correos (.msg / .eml)
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                        <FileText className="h-4 w-4 text-indigo-600" />
+                        Minutas (.docx / .msg / .eml)
+                      </div>
+                      {extractedImages.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => appendMinutasInputRef.current?.click()}
+                            title="Sumar nuevos .msg/.docx sin borrar los que ya cargaste"
+                            className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100"
+                          >
+                            + Agregar más
+                          </button>
+                          <input
+                            ref={appendMinutasInputRef}
+                            type="file"
+                            accept=".docx,.msg,.eml"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                              if (e.target.files) handleAppendMinutas(e.target.files);
+                              e.target.value = '';
+                            }}
+                          />
+                        </>
+                      )}
                     </div>
                     <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-white px-3 py-5 text-center transition hover:border-indigo-400">
                       <span className="text-xs font-medium text-slate-700">
@@ -1092,7 +1217,9 @@ export default function App() {
                           : 'Seleccioná .docx o correos .msg / .eml de Outlook'}
                       </span>
                       <span className="mt-1 text-[11px] text-slate-400">
-                        Extrae los .docx adjuntos de los mails + hash SHA-256
+                        {pendingNewImages.length > 0
+                          ? `+${pendingNewImages.length} hojas nuevas listas para bajar en PDF`
+                          : 'Extrae los .docx adjuntos de los mails + hash SHA-256'}
                       </span>
                       <input
                         type="file"
@@ -1100,7 +1227,10 @@ export default function App() {
                         multiple
                         className="hidden"
                         onChange={(e) => {
-                          if (e.target.files) handleDocxUpload(e.target.files);
+                          if (e.target.files) {
+                            setPendingNewImages([]);
+                            handleDocxUpload(e.target.files);
+                          }
                         }}
                       />
                     </label>
@@ -1144,16 +1274,28 @@ export default function App() {
                       <button
                         type="button"
                         disabled={extractedImages.length === 0}
-                        onClick={() =>
-                          exportImagesToPdfForGemini(extractedImages).catch((e) =>
+                        onClick={() => {
+                          const imgsToExport =
+                            pendingNewImages.length > 0 ? pendingNewImages : extractedImages;
+                          const pdfName =
+                            pendingNewImages.length > 0
+                              ? 'minutas-nuevas-para-gemini.pdf'
+                              : 'minutas-para-gemini.pdf';
+                          exportImagesToPdfForGemini(imgsToExport, pdfName).catch((e) =>
                             setErrorMsg(e instanceof Error ? e.message : 'Error al generar PDF.')
-                          )
+                          );
+                        }}
+                        title={
+                          pendingNewImages.length > 0
+                            ? `Genera PDF solo con las ${pendingNewImages.length} hojas nuevas agregadas`
+                            : 'Genera 1 solo PDF con todas las hojas de tus .docx para subir a Gemini Pro'
                         }
-                        title="Genera 1 solo PDF con todas las hojas de tus .docx para subir a Gemini Pro"
                         className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <Download className="h-3.5 w-3.5" />
-                        1. Bajar PDF
+                        {pendingNewImages.length > 0
+                          ? `1. Bajar PDF (${pendingNewImages.length} nuevas)`
+                          : '1. Bajar PDF'}
                       </button>
                       <button
                         type="button"
@@ -1178,19 +1320,34 @@ export default function App() {
                       rows={3}
                       value={pastedJson}
                       onChange={(e) => setPastedJson(e.target.value)}
-                      placeholder='3. Subí el PDF + Prompt a tu Gemini Pro y pegá acá el JSON que devuelve...'
+                      placeholder={
+                        pendingNewImages.length > 0
+                          ? '3. Pegá acá el JSON de las minutas nuevas (no se tocará nada de lo ya trabajado)…'
+                          : '3. Subí el PDF + Prompt a tu Gemini Pro y pegá acá el JSON que devuelve...'
+                      }
                       className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
                     />
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleRunReconciliation}
-                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    Procesar y Conciliar
-                  </button>
+                  {pendingNewImages.length > 0 && items.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleMergeNewReceipts}
+                      className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      Sumar y Conciliar solo pendientes
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleRunReconciliation}
+                      className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      Procesar y Conciliar
+                    </button>
+                  )}
                 </div>
               </div>
 
