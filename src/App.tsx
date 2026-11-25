@@ -121,6 +121,15 @@ export default function App() {
   // Detail modal, column filters & right-click / long-press context menu
   const [detailItemId, setDetailItemId] = useState<string | null>(null);
   const [modalNavIds, setModalNavIds] = useState<string[]>([]);
+  const [flippedMinutas, setFlippedMinutas] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('concilens_flipped_minutas');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      return new Set<string>();
+    }
+  });
   const [ctxMenu, setCtxMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
   const [colFilters, setColFilters] = useState<Record<ColumnKey, string>>({
     estado: '',
@@ -484,6 +493,21 @@ export default function App() {
     });
     setDetailItemId(null);
     setModalNavIds([]);
+  };
+
+  const handleToggleFlipMinuta = (minutaFile: string) => {
+    const key = minutaFile.toLowerCase();
+    setFlippedMinutas((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        localStorage.setItem('concilens_flipped_minutas', JSON.stringify(Array.from(next)));
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
   };
 
   const handleSaveNote = (itemId: string, auditorNote: string) => {
@@ -1549,6 +1573,7 @@ export default function App() {
             item={detailItem}
             allImages={extractedImages}
             minutaMonthsMap={minutaMonthsMap}
+            flippedMinutas={flippedMinutas}
             categories={categories}
             currentIndex={idx}
             totalCount={navList.length}
@@ -1568,6 +1593,7 @@ export default function App() {
             }}
             onChangeStatus={handleChangeStatus}
             onUnlink={handleUnlinkItem}
+            onToggleFlipMinuta={handleToggleFlipMinuta}
             onSaveNote={handleSaveNote}
             onToggleCategory={handleToggleCategory}
             onOpenCategoryManager={() => setCatModalOpen(true)}

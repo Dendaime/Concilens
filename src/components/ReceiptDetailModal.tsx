@@ -15,6 +15,7 @@ import {
   Check,
   StickyNote,
   X,
+  ArrowLeftRight,
 } from 'lucide-react';
 import type { AuditCategory, AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -37,6 +38,7 @@ interface ReceiptDetailModalProps {
   item: ReconciliationItem | null;
   allImages: ExtractedImage[];
   minutaMonthsMap: Map<string, string[]>;
+  flippedMinutas: Set<string>;
   categories: AuditCategory[];
   currentIndex: number;
   totalCount: number;
@@ -47,6 +49,7 @@ interface ReceiptDetailModalProps {
   onClose: () => void;
   onChangeStatus: (itemId: string, status: AuditStatus) => void;
   onUnlink: (itemId: string) => void;
+  onToggleFlipMinuta: (minutaFile: string) => void;
   onSaveNote: (itemId: string, note: string) => void;
   onToggleCategory: (itemId: string, categoryId: string) => void;
   onOpenCategoryManager: () => void;
@@ -56,6 +59,7 @@ export function ReceiptDetailModal({
   item,
   allImages,
   minutaMonthsMap,
+  flippedMinutas,
   categories,
   currentIndex,
   totalCount,
@@ -66,6 +70,7 @@ export function ReceiptDetailModal({
   onClose,
   onChangeStatus,
   onUnlink,
+  onToggleFlipMinuta,
   onSaveNote,
   onToggleCategory,
   onOpenCategoryManager,
@@ -163,6 +168,7 @@ export function ReceiptDetailModal({
 
   // Automatically resolve image, disambiguating duplicate legacy filenames chronologically by month
   let activeImage: ExtractedImage | undefined;
+  let hasDuplicateCopy = false;
   if (activeReceipt) {
     if (
       typeof activeReceipt.resolvedImageIndex === 'number' &&
@@ -174,10 +180,15 @@ export function ReceiptDetailModal({
       if (idMatches.length === 1) {
         activeImage = idMatches[0];
       } else if (idMatches.length > 1) {
-        const months = minutaMonthsMap.get(activeReceipt.minutaFile.toLowerCase()) ?? [];
+        hasDuplicateCopy = true;
+        const key = activeReceipt.minutaFile.toLowerCase();
+        const months = minutaMonthsMap.get(key) ?? [];
         const recMonth = activeReceipt.fechaIso?.slice(0, 7) ?? '';
         const monthIdx = recMonth ? months.indexOf(recMonth) : -1;
-        const pickIdx = monthIdx >= 0 ? Math.min(monthIdx, idMatches.length - 1) : 0;
+        let pickIdx = monthIdx >= 0 ? Math.min(monthIdx, idMatches.length - 1) : 0;
+        if (flippedMinutas.has(key)) {
+          pickIdx = idMatches.length - 1 - pickIdx;
+        }
         activeImage = idMatches[pickIdx];
       }
     }
@@ -406,13 +417,27 @@ export function ReceiptDetailModal({
           {/* Full-Height Scanned Image Viewer with Categories Dropdown + Observation Button */}
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-1.5">
-              {/* Left: File name + Categories dropdown + Observation button */}
+              {/* Left: File name + optional duplicate flip icon + Categories dropdown + Observation button */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-slate-700">
                   {activeImage
                     ? `${activeImage.minutaFile} · ${activeImage.imageName}`
                     : 'Sin imagen vinculada'}
                 </span>
+
+                {hasDuplicateCopy && activeReceipt && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onToggleFlipMinuta(activeReceipt.minutaFile);
+                      setPan({ x: 0, y: 0 });
+                    }}
+                    title="Alternar copia de minuta repetida"
+                    className="rounded-lg border border-slate-200 bg-slate-50 p-1 text-slate-600 transition hover:bg-slate-100 hover:text-indigo-600"
+                  >
+                    <ArrowLeftRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
 
                 {/* Categories Dropdown */}
                 <div className="relative" onClick={(e) => e.stopPropagation()}>
