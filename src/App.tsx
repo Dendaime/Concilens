@@ -68,7 +68,7 @@ const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }
   { key: 'importe', label: 'Importe', alignRight: true },
   { key: 'minuta', label: 'Minuta' },
   { key: 'observacion', label: 'Obs. Concilens' },
-  { key: 'auditoria', label: 'Campo Auditoría' },
+  { key: 'auditoria', label: 'Observación Auditoría' },
 ];
 
 const STATUS_META: Record<

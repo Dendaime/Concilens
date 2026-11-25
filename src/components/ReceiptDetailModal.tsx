@@ -521,7 +521,7 @@ export function ReceiptDetailModal({
                     setAuditSavedFlash(false);
                     setAuditModalOpen(true);
                   }}
-                  title={hasAuditField ? item.auditField : 'Cargar nota en Campo Auditoría'}
+                  title={hasAuditField ? item.auditField : 'Cargar Observación Auditoría'}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
                     hasAuditField
                       ? 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
@@ -529,7 +529,7 @@ export function ReceiptDetailModal({
                   }`}
                 >
                   <ClipboardEdit className="h-3.5 w-3.5" />
-                  Campo Auditoría
+                  Observación Auditoría
                 </button>
               </div>
 
@@ -739,7 +739,7 @@ export function ReceiptDetailModal({
           >
             <div className="flex items-center justify-between border-b border-slate-200 bg-indigo-50/70 px-4 py-3">
               <strong className="text-xs font-bold text-indigo-950">
-                ✍️ Campo Auditoría{' '}
+                ✍️ Observación Auditoría{' '}
                 <span className="font-normal text-indigo-700">(carga manual del auditor)</span>
               </strong>
               <button
@@ -782,7 +782,7 @@ export function ReceiptDetailModal({
                     onClick={handleSaveAudit}
                     className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                   >
-                    Guardar campo auditoría
+                    Guardar observación
                   </button>
                 </div>
               </div>
