@@ -165,6 +165,8 @@ export default function App() {
   const [docxFileNames, setDocxFileNames] = useState<string[]>([]);
   const [extractedImages, setExtractedImages] = useState<ExtractedImage[]>([]);
   const [pendingNewImages, setPendingNewImages] = useState<ExtractedImage[]>([]);
+  const [rescanPickerOpen, setRescanPickerOpen] = useState(false);
+  const [rescanSelectedFiles, setRescanSelectedFiles] = useState<string[]>([]);
   const [extractedReceipts, setExtractedReceipts] = useState<ExtractedReceipt[]>([]);
   const appendMinutasInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -445,9 +447,13 @@ export default function App() {
     }
     try {
       const targetImages = pendingNewImages.length > 0 ? pendingNewImages : extractedImages;
+      const imgIdxById = new Map<string, number>();
+      extractedImages.forEach((img, idx) => imgIdxById.set(img.id, idx));
+
       const parsedNewReceipts = parseManualGeminiJson(pastedJson, targetImages).map((r, i) => ({
         ...r,
         id: `added-${Date.now()}-${i}`,
+        resolvedImageIndex: r.imageId && imgIdxById.has(r.imageId) ? imgIdxById.get(r.imageId) : undefined,
       }));
 
       // Keep ALL existing items that are NOT pure "Sin respaldo" completely untouched
@@ -461,6 +467,7 @@ export default function App() {
       // Build duplicate-detection keys from already-existing receipts in untouched items
       const normNum = (s: string) => s.replace(/\D/g, '').replace(/^0+/, '');
       const existingReceiptKeys = new Set<string>();
+      const existingImgAmtCounts = new Map<string, number>();
       for (const it of untouchedItems) {
         for (const r of it.receipts) {
           const num = normNum(r.nroComprobante || '');
@@ -470,6 +477,10 @@ export default function App() {
           }
           if (r.fechaIso && amt && num.length >= 3) {
             existingReceiptKeys.add(`dt::${r.fechaIso}::${amt}::${num}`);
+          }
+          if (r.imageId && amt) {
+            const imgKey = `${r.imageId}::${amt}`;
+            existingImgAmtCounts.set(imgKey, (existingImgAmtCounts.get(imgKey) ?? 0) + 1);
           }
         }
       }
@@ -481,8 +492,17 @@ export default function App() {
         const amt = r.importe !== null ? r.importe.toFixed(2) : '';
         const k1 = num.length >= 4 && amt ? `num::${num}::${amt}` : '';
         const k2 = r.fechaIso && amt && num.length >= 3 ? `dt::${r.fechaIso}::${amt}::${num}` : '';
+        const imgKey = r.imageId && amt ? `${r.imageId}::${amt}` : '';
+        const imgCount = imgKey ? existingImgAmtCounts.get(imgKey) ?? 0 : 0;
+
         if ((k1 && existingReceiptKeys.has(k1)) || (k2 && existingReceiptKeys.has(k2))) {
           discardedReceipts++;
+          if (imgCount > 0) existingImgAmtCounts.set(imgKey, imgCount - 1);
+          continue;
+        }
+        if (imgCount > 0) {
+          discardedReceipts++;
+          existingImgAmtCounts.set(imgKey, imgCount - 1);
           continue;
         }
         if (k1) existingReceiptKeys.add(k1);
@@ -875,6 +895,60 @@ export default function App() {
     }
     return c;
   }, [items]);
+
+  const { unreadImages, minutaSummaryList } = useMemo(() => {
+    const allReceipts: ExtractedReceipt[] = [
+      ...items.flatMap((it) => it.receipts),
+      ...extractedReceipts,
+    ];
+    const readIds = new Set<string>();
+    const readIndexes = new Set<number>();
+    const readNameKeys = new Set<string>();
+    const receiptCountByFile = new Map<string, number>();
+    const countedReceiptIds = new Set<string>();
+
+    for (const r of allReceipts) {
+      if (r.imageId) readIds.add(r.imageId);
+      if (r.resolvedImageIndex !== undefined) readIndexes.add(r.resolvedImageIndex);
+      if (r.minutaFile && r.imageName) {
+        readNameKeys.add(`${r.minutaFile.toLowerCase()}::${r.imageName.toLowerCase()}`);
+      }
+      if (!countedReceiptIds.has(r.id)) {
+        countedReceiptIds.add(r.id);
+        const fKey = (r.minutaFile || '').toLowerCase();
+        if (fKey) receiptCountByFile.set(fKey, (receiptCountByFile.get(fKey) ?? 0) + 1);
+      }
+    }
+
+    const unread: ExtractedImage[] = [];
+    const byFile = new Map<string, { file: string; totalPages: number; unreadPages: number }>();
+
+    extractedImages.forEach((img, idx) => {
+      const isRead =
+        readIds.has(img.id) ||
+        readIndexes.has(idx) ||
+        readNameKeys.has(`${img.minutaFile.toLowerCase()}::${img.imageName.toLowerCase()}`);
+      if (!isRead) unread.push(img);
+
+      const entry = byFile.get(img.minutaFile) ?? {
+        file: img.minutaFile,
+        totalPages: 0,
+        unreadPages: 0,
+      };
+      entry.totalPages++;
+      if (!isRead) entry.unreadPages++;
+      byFile.set(img.minutaFile, entry);
+    });
+
+    const summary = Array.from(byFile.values())
+      .map((entry) => ({
+        ...entry,
+        receiptCount: receiptCountByFile.get(entry.file.toLowerCase()) ?? 0,
+      }))
+      .sort((a, b) => a.file.localeCompare(b.file, 'es', { numeric: true }));
+
+    return { unreadImages: unread, minutaSummaryList: summary };
+  }, [extractedImages, items, extractedReceipts]);
 
   const getItemColValues = (it: ReconciliationItem, col: ColumnKey): string[] => {
     const sys = it.systemMovements[0];
@@ -1347,7 +1421,7 @@ export default function App() {
                             pendingNewImages.length > 0 ? pendingNewImages : extractedImages;
                           const pdfName =
                             pendingNewImages.length > 0
-                              ? 'minutas-nuevas-para-gemini.pdf'
+                              ? 'minutas-lote-para-gemini.pdf'
                               : 'minutas-para-gemini.pdf';
                           exportImagesToPdfForGemini(imgsToExport, pdfName).catch((e) =>
                             setErrorMsg(e instanceof Error ? e.message : 'Error al generar PDF.')
@@ -1355,14 +1429,14 @@ export default function App() {
                         }}
                         title={
                           pendingNewImages.length > 0
-                            ? `Genera PDF solo con las ${pendingNewImages.length} hojas nuevas agregadas`
+                            ? `Genera PDF solo con las ${pendingNewImages.length} hojas del lote seleccionado`
                             : 'Genera 1 solo PDF con todas las hojas de tus .docx para subir a Gemini Pro'
                         }
                         className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <Download className="h-3.5 w-3.5" />
                         {pendingNewImages.length > 0
-                          ? `1. Bajar PDF (${pendingNewImages.length} nuevas)`
+                          ? `1. Bajar PDF (${pendingNewImages.length} hojas)`
                           : '1. Bajar PDF'}
                       </button>
                       <button
@@ -1382,7 +1456,151 @@ export default function App() {
                           </>
                         )}
                       </button>
+                      {pendingNewImages.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPendingNewImages([]);
+                            setInfoMsg(null);
+                          }}
+                          title="Cancelar el lote actual y volver al modo normal"
+                          className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                        >
+                          × Cancelar lote
+                        </button>
+                      )}
                     </div>
+
+                    {/* Recovery tools for missed pages / specific minutas */}
+                    {items.length > 0 && extractedImages.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {unreadImages.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setErrorMsg(null);
+                                setPendingNewImages(unreadImages);
+                                setRescanPickerOpen(false);
+                                setPastedJson('');
+                                setInfoMsg(
+                                  `PDF generado con ${unreadImages.length} hojas que Gemini no había leído. Subilo a Gemini Pro, pegá el JSON acá y tocá "Sumar y Conciliar solo pendientes".`
+                                );
+                                exportImagesToPdfForGemini(
+                                  unreadImages,
+                                  'minutas-sin-leer-para-gemini.pdf'
+                                ).catch((e) =>
+                                  setErrorMsg(e instanceof Error ? e.message : 'Error al generar PDF.')
+                                );
+                              }}
+                              title="Descarga un PDF únicamente con las hojas de las que Gemini no extrajo ningún comprobante"
+                              className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                            >
+                              <AlertTriangle className="h-3 w-3" />
+                              Hojas sin leer ({unreadImages.length})
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setRescanPickerOpen((prev) => !prev)}
+                            title="Elegir minutas puntuales (ej. 30.docx) para bajar un PDF solo de esas hojas y re-escanearlas sin duplicar"
+                            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
+                              rescanPickerOpen
+                                ? 'border-indigo-400 bg-indigo-100 text-indigo-800'
+                                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            Re-escanear minutas
+                          </button>
+                        </div>
+
+                        {rescanPickerOpen && (
+                          <div className="rounded-lg border border-indigo-200 bg-white p-2 shadow-sm">
+                            <div className="mb-1.5 flex items-center justify-between text-[11px]">
+                              <span className="font-semibold text-slate-700">
+                                Elegí las minutas a re-escanear:
+                              </span>
+                              {rescanSelectedFiles.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setRescanSelectedFiles([])}
+                                  className="text-slate-400 hover:text-slate-700"
+                                >
+                                  Limpiar
+                                </button>
+                              )}
+                            </div>
+                            <div className="max-h-32 space-y-0.5 overflow-y-auto pr-1">
+                              {minutaSummaryList.map((m) => {
+                                const checked = rescanSelectedFiles.includes(m.file);
+                                return (
+                                  <label
+                                    key={m.file}
+                                    className="flex cursor-pointer items-center justify-between gap-2 rounded px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                                  >
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() =>
+                                          setRescanSelectedFiles((prev) =>
+                                            prev.includes(m.file)
+                                              ? prev.filter((f) => f !== m.file)
+                                              : [...prev, m.file]
+                                          )
+                                        }
+                                        className="h-3 w-3 rounded border-slate-300 text-indigo-600"
+                                      />
+                                      <span className="truncate font-medium">{m.file}</span>
+                                    </span>
+                                    <span className="shrink-0 text-[10px] text-slate-400 tabular-nums">
+                                      {m.totalPages} h · {m.receiptCount} comp.
+                                      {m.unreadPages > 0 ? (
+                                        <span className="ml-1 font-semibold text-amber-600">
+                                          ({m.unreadPages} s/leer)
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            {rescanSelectedFiles.length > 0 && (() => {
+                              const selectedImgs = extractedImages.filter((img) =>
+                                rescanSelectedFiles.includes(img.minutaFile)
+                              );
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setErrorMsg(null);
+                                    setPendingNewImages(selectedImgs);
+                                    setRescanPickerOpen(false);
+                                    setPastedJson('');
+                                    setInfoMsg(
+                                      `PDF generado con ${selectedImgs.length} hojas (${rescanSelectedFiles.join(', ')}). Pasalo por Gemini Pro, pegá el JSON acá y tocá "Sumar y Conciliar solo pendientes".`
+                                    );
+                                    exportImagesToPdfForGemini(
+                                      selectedImgs,
+                                      'minutas-reescaneo-para-gemini.pdf'
+                                    ).catch((e) =>
+                                      setErrorMsg(
+                                        e instanceof Error ? e.message : 'Error al generar PDF.'
+                                      )
+                                    );
+                                  }}
+                                  className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-700"
+                                >
+                                  <Download className="h-3 w-3" />
+                                  Bajar PDF ({selectedImgs.length} hojas) para re-escanear
+                                </button>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     <textarea
                       rows={3}
