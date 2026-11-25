@@ -37,7 +37,7 @@ import { GEMINI_CHAT_PROMPT, parseManualGeminiJson } from './lib/manualJsonParse
 import { exportImagesToPdfForGemini } from './lib/pdfExporter';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
 import { exportAuditToExcel } from './lib/exportExcel';
-import { formatARS } from './lib/dateUtils';
+import { formatARS, normalizeDateString, parseCurrencyAmount } from './lib/dateUtils';
 import { buildDemoData } from './lib/demoData';
 import {
   clearSessionInDb,
@@ -47,7 +47,7 @@ import {
   saveSessionToDb,
   type SavedSession,
 } from './lib/storage';
-import { ReceiptDetailModal } from './components/ReceiptDetailModal';
+import { ReceiptDetailModal, type ManualReceiptPayload } from './components/ReceiptDetailModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
 type ColumnKey =
@@ -845,6 +845,66 @@ export default function App() {
       prev
         .map((id) => (id === currentItemId ? mergedId : id))
         .filter((id) => id !== targetItemId)
+    );
+  };
+
+  const handleAttachManualReceipt = (itemId: string, payload: ManualReceiptPayload) => {
+    const stamp = Date.now();
+    const ext = payload.mimeType.includes('jpeg') ? 'jpg' : 'png';
+    const imageName = `captura_${stamp}.${ext}`;
+    const minutaFile = payload.minutaFile || 'Captura manual';
+    const parsedDate = normalizeDateString(payload.fecha);
+    const parsedAmt = parseCurrencyAmount(payload.importe);
+
+    const newImage: ExtractedImage = {
+      id: `manual_${stamp}::${minutaFile}::${imageName}`,
+      minutaFile,
+      minutaDate: parsedDate?.display ?? null,
+      minutaDateIso: parsedDate?.iso ?? null,
+      imageName,
+      mimeType: payload.mimeType || 'image/png',
+      dataUrl: payload.dataUrl,
+      sha256: `manual-${stamp}-${payload.sizeBytes}`,
+      sizeBytes: payload.sizeBytes,
+    };
+
+    const resolvedIdx = extractedImages.length;
+
+    const newReceipt: ExtractedReceipt = {
+      id: `manual-rec-${stamp}`,
+      imageId: newImage.id,
+      resolvedImageIndex: resolvedIdx,
+      minutaFile,
+      minutaDate: parsedDate?.display ?? null,
+      minutaDateIso: parsedDate?.iso ?? null,
+      imageName,
+      fecha: parsedDate?.display ?? (payload.fecha || null),
+      fechaIso: parsedDate?.iso ?? null,
+      importe: parsedAmt,
+      proveedorOConcepto: payload.proveedorOConcepto || 'Comprobante manual',
+      tipoComprobante: 'Captura manual',
+      nroComprobante: payload.nroComprobante,
+      cuit: null,
+      posicion: 'completa',
+      legible: true,
+      notas: 'Cargado manualmente por auditoría',
+      isDuplicateImage: false,
+      isDuplicateReceipt: false,
+    };
+
+    setExtractedImages((prev) => [...prev, newImage]);
+    setExtractedReceipts((prev) => [...prev, newReceipt]);
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        return {
+          ...it,
+          status: 'conciliado',
+          reason: 'Comprobante cargado manualmente por auditoría',
+          matchScore: 100,
+          receipts: [...it.receipts, newReceipt],
+        };
+      })
     );
   };
 
@@ -2107,6 +2167,7 @@ export default function App() {
             onChangeStatus={handleChangeStatus}
             onUnlink={handleUnlinkItem}
             onLinkItems={handleLinkItems}
+            onAttachManualReceipt={handleAttachManualReceipt}
             onToggleFlipMinuta={handleToggleFlipMinuta}
             onSaveNote={handleSaveNote}
             onSaveAuditField={handleSaveAuditField}
