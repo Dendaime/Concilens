@@ -50,7 +50,15 @@ import {
 import { ReceiptDetailModal } from './components/ReceiptDetailModal';
 
 type FilterTab = 'excepciones' | 'todos' | AuditStatus | 'duplicados';
-type ColumnKey = 'estado' | 'fecha' | 'numero' | 'proveedor' | 'importe' | 'minuta' | 'observacion';
+type ColumnKey =
+  | 'estado'
+  | 'fecha'
+  | 'numero'
+  | 'proveedor'
+  | 'importe'
+  | 'minuta'
+  | 'observacion'
+  | 'auditoria';
 
 const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }> = [
   { key: 'estado', label: 'Estado' },
@@ -59,7 +67,8 @@ const COLUMN_DEFS: Array<{ key: ColumnKey; label: string; alignRight?: boolean }
   { key: 'proveedor', label: 'Proveedor / Concepto' },
   { key: 'importe', label: 'Importe', alignRight: true },
   { key: 'minuta', label: 'Minuta' },
-  { key: 'observacion', label: 'Observación' },
+  { key: 'observacion', label: 'Obs. Concilens' },
+  { key: 'auditoria', label: 'Campo Auditoría' },
 ];
 
 const STATUS_META: Record<
@@ -177,6 +186,7 @@ export default function App() {
     importe: '',
     minuta: '',
     observacion: '',
+    auditoria: '',
   });
   const [colSelectedValues, setColSelectedValues] = useState<Record<ColumnKey, string[]>>({
     estado: [],
@@ -186,6 +196,7 @@ export default function App() {
     importe: [],
     minuta: [],
     observacion: [],
+    auditoria: [],
   });
   const [openColFilter, setOpenColFilter] = useState<ColumnKey | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
@@ -447,11 +458,19 @@ export default function App() {
 
     const customNotesBySys = new Map<string, string>();
     const customNotesByRec = new Map<string, string>();
+    const auditFieldBySys = new Map<string, string>();
+    const auditFieldByRec = new Map<string, string>();
     for (const it of unlockedItems) {
       const note = it.auditorNote.trim();
-      if (!note || note.startsWith('Diferencia de fecha:')) continue;
-      for (const m of it.systemMovements) customNotesBySys.set(m.id, note);
-      for (const r of it.receipts) customNotesByRec.set(r.id, note);
+      if (note && !note.startsWith('Diferencia de fecha:')) {
+        for (const m of it.systemMovements) customNotesBySys.set(m.id, note);
+        for (const r of it.receipts) customNotesByRec.set(r.id, note);
+      }
+      const af = (it.auditField ?? '').trim();
+      if (af) {
+        for (const m of it.systemMovements) auditFieldBySys.set(m.id, af);
+        for (const r of it.receipts) auditFieldByRec.set(r.id, af);
+      }
     }
 
     const remainingMovs = filteredMovements.filter((m) => !lockedSysIds.has(m.id));
@@ -472,11 +491,19 @@ export default function App() {
       const recoveredNote =
         it.systemMovements.map((m) => customNotesBySys.get(m.id)).find(Boolean) ??
         it.receipts.map((r) => customNotesByRec.get(r.id)).find(Boolean);
-      if (!recoveredNote) return it;
-      const mergedNote = it.auditorNote.trim()
-        ? `${it.auditorNote.trim()} | ${recoveredNote}`
-        : recoveredNote;
-      return { ...it, auditorNote: mergedNote };
+      const recoveredAudit =
+        it.systemMovements.map((m) => auditFieldBySys.get(m.id)).find(Boolean) ??
+        it.receipts.map((r) => auditFieldByRec.get(r.id)).find(Boolean);
+      const mergedNote = recoveredNote
+        ? it.auditorNote.trim()
+          ? `${it.auditorNote.trim()} | ${recoveredNote}`
+          : recoveredNote
+        : it.auditorNote;
+      return {
+        ...it,
+        auditorNote: mergedNote,
+        ...(recoveredAudit ? { auditField: recoveredAudit } : {}),
+      };
     });
 
     const combined = [...reReconciled, ...lockedItems];
@@ -563,6 +590,7 @@ export default function App() {
         hasDuplicateAlert: false,
         manualState: 'pendiente',
         auditorNote: target.auditorNote,
+        auditField: target.auditField,
       }));
       const unregistered: ReconciliationItem[] = target.receipts.map((rec) => ({
         id: `unlinked-rec-${rec.id}-${Date.now()}`,
@@ -597,6 +625,9 @@ export default function App() {
       const mergedNote = [a.auditorNote.trim(), b.auditorNote.trim()]
         .filter(Boolean)
         .join(' | ');
+      const mergedAudit = [(a.auditField ?? '').trim(), (b.auditField ?? '').trim()]
+        .filter(Boolean)
+        .join(' | ');
 
       const merged: ReconciliationItem = {
         id: mergedId,
@@ -609,6 +640,7 @@ export default function App() {
         duplicateDetails: a.duplicateDetails || b.duplicateDetails,
         manualState: 'aprobado',
         auditorNote: mergedNote,
+        auditField: mergedAudit,
       };
 
       const insertIdx = prev.findIndex((it) => it.id === currentItemId);
@@ -645,6 +677,10 @@ export default function App() {
 
   const handleSaveNote = (itemId: string, auditorNote: string) => {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditorNote } : it)));
+  };
+
+  const handleSaveAuditField = (itemId: string, auditField: string) => {
+    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, auditField } : it)));
   };
 
   const counts = useMemo(() => {
@@ -686,6 +722,8 @@ export default function App() {
         return [rec ? rec.minutaFile : '(Sin minuta)'];
       case 'observacion':
         return it.auditorNote.trim() ? ['Con observación (📝)'] : ['(Sin observación)'];
+      case 'auditoria':
+        return (it.auditField ?? '').trim() ? ['Con nota auditor (✍️)'] : ['(Vacío)'];
     }
   };
 
@@ -723,6 +761,7 @@ export default function App() {
       importe: '',
       minuta: '',
       observacion: '',
+      auditoria: '',
     });
     setColSelectedValues({
       estado: [],
@@ -732,6 +771,7 @@ export default function App() {
       importe: [],
       minuta: [],
       observacion: [],
+      auditoria: [],
     });
   };
 
@@ -771,9 +811,11 @@ export default function App() {
           const extra =
             col.key === 'observacion'
               ? ` ${it.auditorNote}`
-              : col.key === 'proveedor'
-                ? ` ${it.reason}`
-                : '';
+              : col.key === 'auditoria'
+                ? ` ${it.auditField ?? ''}`
+                : col.key === 'proveedor'
+                  ? ` ${it.reason}`
+                  : '';
           const combined = `${vals.join(' ')}${extra}`.toLowerCase();
           if (!combined.includes(txtFilter)) return false;
         }
@@ -784,6 +826,7 @@ export default function App() {
         STATUS_META[it.status].label,
         it.reason,
         it.auditorNote,
+        it.auditField ?? '',
         ...it.systemMovements.map(
           (m) => `${m.numero} ${m.razonSocial} ${m.descripcion} ${m.balance} ${m.fecha} ${m.total}`
         ),
@@ -1266,7 +1309,9 @@ export default function App() {
                             <div
                               onClick={(e) => e.stopPropagation()}
                               className={`absolute top-full z-30 mt-1 w-60 rounded-xl border border-slate-200 bg-white p-2 text-left font-normal normal-case tracking-normal shadow-xl ${
-                                col.key === 'observacion' || col.alignRight ? 'right-2' : 'left-2'
+                                col.key === 'observacion' || col.key === 'auditoria' || col.alignRight
+                                  ? 'right-2'
+                                  : 'left-2'
                               }`}
                             >
                               <input
@@ -1436,7 +1481,7 @@ export default function App() {
                         <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
                           {rec ? rec.minutaFile : '—'}
                         </td>
-                        <td className="max-w-[200px] px-3 py-2.5">
+                        <td className="max-w-[180px] px-3 py-2.5">
                           {it.auditorNote.trim() && (
                             <span
                               title={it.auditorNote}
@@ -1446,12 +1491,22 @@ export default function App() {
                             </span>
                           )}
                         </td>
+                        <td className="max-w-[200px] px-3 py-2.5">
+                          {(it.auditField ?? '').trim() && (
+                            <span
+                              title={it.auditField}
+                              className="inline-flex max-w-full items-center gap-1 truncate rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-800 ring-1 ring-indigo-200"
+                            >
+                              ✍️ <span className="truncate">{it.auditField}</span>
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
                   {visibleItems.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                      <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                         No hay resultados para el filtro actual.
                       </td>
                     </tr>
@@ -1545,6 +1600,7 @@ export default function App() {
             onLinkItems={handleLinkItems}
             onToggleFlipMinuta={handleToggleFlipMinuta}
             onSaveNote={handleSaveNote}
+            onSaveAuditField={handleSaveAuditField}
           />
         );
       })()}

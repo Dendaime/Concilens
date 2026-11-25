@@ -21,7 +21,8 @@ export function exportAuditToExcel(
 
     return {
       Estado: STATUS_LABELS[item.status],
-      Observacion_Auditoria: item.auditorNote,
+      Observacion_Concilens: item.auditorNote,
+      Campo_Auditoria: item.auditField ?? '',
       Motivo: item.reason,
       Alerta_Duplicado: item.hasDuplicateAlert ? item.duplicateDetails || 'SI' : '',
       Fecha_Sistema: sys?.fecha ?? '',

@@ -16,6 +16,7 @@ import {
   Link2,
   Search,
   CheckCircle2,
+  ClipboardEdit,
 } from 'lucide-react';
 import type { AuditStatus, ExtractedImage, ReconciliationItem } from '../types';
 import { formatARS } from '../lib/dateUtils';
@@ -53,6 +54,7 @@ interface ReceiptDetailModalProps {
   onLinkItems: (currentItemId: string, targetItemId: string) => void;
   onToggleFlipMinuta: (minutaFile: string) => void;
   onSaveNote: (itemId: string, note: string) => void;
+  onSaveAuditField: (itemId: string, auditField: string) => void;
 }
 
 export function ReceiptDetailModal({
@@ -73,6 +75,7 @@ export function ReceiptDetailModal({
   onLinkItems,
   onToggleFlipMinuta,
   onSaveNote,
+  onSaveAuditField,
 }: ReceiptDetailModalProps) {
   const [rotation, setRotation] = useState(0);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -85,10 +88,13 @@ export function ReceiptDetailModal({
 
   // Sub-modals
   const [obsModalOpen, setObsModalOpen] = useState(false);
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
   const [draftNote, setDraftNote] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
+  const [draftAuditField, setDraftAuditField] = useState('');
+  const [auditSavedFlash, setAuditSavedFlash] = useState(false);
 
   // Lock background page scroll while modal is open
   useEffect(() => {
@@ -118,15 +124,18 @@ export function ReceiptDetailModal({
   useEffect(() => {
     if (!item) return;
     setDraftNote(item.auditorNote ?? '');
+    setDraftAuditField(item.auditField ?? '');
     setRotation(0);
     setZoom(DEFAULT_ZOOM);
     setPan({ x: 0, y: 0 });
     setIsDragging(false);
     setActiveReceiptIdx(0);
     setObsModalOpen(false);
+    setAuditModalOpen(false);
     setLinkModalOpen(false);
     setLinkQuery('');
     setSavedFlash(false);
+    setAuditSavedFlash(false);
   }, [item?.id]);
 
   // Keyboard navigation (← / → / Enter / Escape)
@@ -137,6 +146,13 @@ export function ReceiptDetailModal({
         if (e.key === 'Escape') {
           e.preventDefault();
           setObsModalOpen(false);
+        }
+        return;
+      }
+      if (auditModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setAuditModalOpen(false);
         }
         return;
       }
@@ -163,7 +179,7 @@ export function ReceiptDetailModal({
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [item, obsModalOpen, linkModalOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
+  }, [item, obsModalOpen, auditModalOpen, linkModalOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
 
   if (!item) return null;
 
@@ -202,6 +218,7 @@ export function ReceiptDetailModal({
   const isValidated = item.status === 'validado';
   const canUnlink = item.systemMovements.length > 0 && item.receipts.length > 0;
   const hasNote = item.auditorNote.trim().length > 0;
+  const hasAuditField = (item.auditField ?? '').trim().length > 0;
 
   const title =
     sys?.descripcion || sys?.razonSocial || activeReceipt?.proveedorOConcepto || 'Detalle de comprobante';
@@ -224,6 +241,15 @@ export function ReceiptDetailModal({
     setTimeout(() => {
       setSavedFlash(false);
       setObsModalOpen(false);
+    }, 450);
+  };
+
+  const handleSaveAudit = () => {
+    onSaveAuditField(item.id, draftAuditField);
+    setAuditSavedFlash(true);
+    setTimeout(() => {
+      setAuditSavedFlash(false);
+      setAuditModalOpen(false);
     }, 450);
   };
 
@@ -477,7 +503,7 @@ export function ReceiptDetailModal({
                     setSavedFlash(false);
                     setObsModalOpen(true);
                   }}
-                  title={hasNote ? item.auditorNote : 'Agregar observación de auditoría'}
+                  title={hasNote ? item.auditorNote : 'Ver o editar observación de Concilens'}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
                     hasNote
                       ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
@@ -485,7 +511,25 @@ export function ReceiptDetailModal({
                   }`}
                 >
                   <StickyNote className="h-3.5 w-3.5" />
-                  {hasNote ? 'Ver / Editar obs.' : 'Observación'}
+                  Observación Concilens
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftAuditField(item.auditField ?? '');
+                    setAuditSavedFlash(false);
+                    setAuditModalOpen(true);
+                  }}
+                  title={hasAuditField ? item.auditField : 'Cargar nota en Campo Auditoría'}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                    hasAuditField
+                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                      : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <ClipboardEdit className="h-3.5 w-3.5" />
+                  Campo Auditoría
                 </button>
               </div>
 
@@ -614,7 +658,7 @@ export function ReceiptDetailModal({
         </div>
       </div>
 
-      {/* Observation Sub-Modal */}
+      {/* Observación Concilens Sub-Modal */}
       {obsModalOpen && (
         <div
           className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/45 p-4"
@@ -629,8 +673,7 @@ export function ReceiptDetailModal({
           >
             <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
               <strong className="text-xs font-bold text-slate-900">
-                📝 Observación auditoría{' '}
-                <span className="font-normal text-slate-500">(solo Concilens)</span>
+                📝 Observación Concilens
               </strong>
               <button
                 type="button"
@@ -652,7 +695,7 @@ export function ReceiptDetailModal({
                     handleSaveObs();
                   }
                 }}
-                placeholder="Escribí una observación de auditoría para este registro…"
+                placeholder="Observación generada por Concilens…"
                 className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
               <div className="mt-3 flex items-center justify-between">
@@ -672,7 +715,74 @@ export function ReceiptDetailModal({
                     onClick={handleSaveObs}
                     className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                   >
-                    Guardar observación
+                    Guardar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Campo Auditoría Sub-Modal */}
+      {auditModalOpen && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/45 p-4"
+          onClick={(e) => {
+            e.stopPropagation();
+            setAuditModalOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 bg-indigo-50/70 px-4 py-3">
+              <strong className="text-xs font-bold text-indigo-950">
+                ✍️ Campo Auditoría{' '}
+                <span className="font-normal text-indigo-700">(carga manual del auditor)</span>
+              </strong>
+              <button
+                type="button"
+                onClick={() => setAuditModalOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-4">
+              <textarea
+                rows={4}
+                autoFocus
+                value={draftAuditField}
+                onChange={(e) => setDraftAuditField(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSaveAudit();
+                  }
+                }}
+                placeholder="Escribí una nota o hallazgo de auditoría para este registro…"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-emerald-600">
+                  {auditSavedFlash ? '✓ Guardado' : ''}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAuditModalOpen(false)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveAudit}
+                    className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Guardar campo auditoría
                   </button>
                 </div>
               </div>

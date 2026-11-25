@@ -77,6 +77,7 @@ export interface ReconciliationItem {
   duplicateDetails?: string;
   manualState: ManualReviewState;
   auditorNote: string;
+  auditField?: string;
   categoryIds?: string[];
 }
 
