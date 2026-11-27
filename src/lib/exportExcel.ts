@@ -55,3 +55,50 @@ export function exportAuditToExcel(
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Auditoria Concilens');
   XLSX.writeFile(workbook, filename);
 }
+
+/**
+ * Exports ONLY the currently visible (filtered & sorted) rows and ONLY the 10 visible table columns.
+ */
+export function exportViewToExcel(
+  visibleItems: ReconciliationItem[],
+  filename = 'concilens-vista.xlsx'
+) {
+  const rows = visibleItems.map((item) => {
+    const sys = item.systemMovements[0];
+    const rec = item.receipts[0];
+    const amount =
+      sys?.total ?? item.receipts.reduce((sum, r) => sum + (r.importe ?? 0), 0);
+
+    const isLinked = item.systemMovements.length > 0 && item.receipts.length > 0;
+    const estado = isLinked
+      ? 'Conciliado'
+      : item.systemMovements.length > 0
+        ? 'Sin respaldo'
+        : 'No registrado';
+    const situacion =
+      item.status === 'validado'
+        ? 'Validado'
+        : item.status === 'revisar'
+          ? 'Revisar'
+          : '';
+
+    return {
+      Estado: estado,
+      'Situación': situacion,
+      Fecha: sys?.fecha ?? rec?.fecha ?? '',
+      'N° Caja': sys?.caja || '',
+      'N° Comp.': sys?.numero || rec?.nroComprobante || '',
+      'Proveedor / Concepto':
+        sys?.descripcion || sys?.razonSocial || rec?.proveedorOConcepto || '',
+      Importe: amount,
+      Minuta: rec ? rec.minutaFile : '',
+      'Obs. Concilens': item.auditorNote.trim(),
+      'Observación Auditoría': (item.auditField ?? '').trim(),
+    };
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Vista Concilens');
+  XLSX.writeFile(workbook, filename);
+}

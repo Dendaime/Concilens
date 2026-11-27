@@ -36,7 +36,7 @@ import { extractDocxFromMixedFiles } from './lib/emailExtractor';
 import { GEMINI_CHAT_PROMPT, parseManualGeminiJson } from './lib/manualJsonParser';
 import { exportImagesToPdfForGemini } from './lib/pdfExporter';
 import { reconcileMovementsAndReceipts } from './lib/reconcile';
-import { exportAuditToExcel } from './lib/exportExcel';
+import { exportAuditToExcel, exportViewToExcel } from './lib/exportExcel';
 import { formatARS, normalizeDateString, parseCurrencyAmount } from './lib/dateUtils';
 import { buildDemoData } from './lib/demoData';
 import {
@@ -216,6 +216,7 @@ export default function App() {
     auditoria: [],
   });
   const [openColFilter, setOpenColFilter] = useState<ColumnKey | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [sortConfig, setSortConfig] = useState<{ key: ColumnKey; dir: 'asc' | 'desc' } | null>(
     null
   );
@@ -238,6 +239,7 @@ export default function App() {
     const closeMenus = () => {
       setCtxMenu(null);
       setOpenColFilter(null);
+      setExportMenuOpen(false);
     };
     window.addEventListener('click', closeMenus);
     return () => window.removeEventListener('click', closeMenus);
@@ -1343,15 +1345,53 @@ export default function App() {
               <Trash2 className="h-3.5 w-3.5" />
               Limpiar
             </button>
-            <button
-              type="button"
-              disabled={items.length === 0}
-              onClick={() => exportAuditToExcel(items)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Exportar Excel
-            </button>
+            <div className="relative" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                disabled={items.length === 0}
+                onClick={() => setExportMenuOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Exportar
+                <span className="ml-0.5 text-[10px] opacity-80">▾</span>
+              </button>
+              {exportMenuOpen && (
+                <div className="absolute right-0 top-full z-40 mt-1.5 w-60 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      exportAuditToExcel(items);
+                      setExportMenuOpen(false);
+                    }}
+                    className="flex w-full flex-col items-start px-3 py-2 text-left transition hover:bg-slate-50"
+                  >
+                    <span className="text-xs font-semibold text-slate-800">
+                      Excel completo
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Todos los registros ({items.length}) y todas las columnas
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={visibleItems.length === 0}
+                    onClick={() => {
+                      exportViewToExcel(visibleItems);
+                      setExportMenuOpen(false);
+                    }}
+                    className="flex w-full flex-col items-start border-t border-slate-100 px-3 py-2 text-left transition hover:bg-indigo-50/70 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span className="text-xs font-semibold text-indigo-700">
+                      Excel vista
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Solo registros visibles ({visibleItems.length}) y columnas de la tabla
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
